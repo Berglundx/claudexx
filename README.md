@@ -22,17 +22,41 @@ macOS and Linux.
 
 ## Quick start
 
-1. Install Python 3 from python.org.
-2. Open the app:
-   - **Windows:** double-click `C4D Render Guard.bat`
-   - **macOS:** double-click `C4D Render Guard.command`
-   - or run `python -m c4dguard gui`
-3. Pick the `.c4d` project, the output folder and the frame range, then click
-   **Add job and render**.
-4. Tick **Resume automatically after reboot**.
+1. Install **Python 3** from python.org. On Windows, tick *"Add python.exe to
+   PATH"* during setup.
+2. Put this folder somewhere permanent, for example `C:\Tools\C4DRenderGuard`.
+3. Start rendering:
+   - **Windows:** drag your `.c4d` file(s) onto **`C4D Render Guard.bat`**, or
+     double-click it and drop files into the window.
+   - **Mac:** double-click **`Create Mac App.command`** once. It creates
+     **`C4D Render Guard.app`**. Drag `.c4d` files onto that app (or onto its
+     Dock icon), or open it and drop files into the window.
 
-The render runs in its own background process, so you can close the window.
-Open it again at any time to check progress.
+That's all. The program:
+
+- reads the **frame range** from the project's own Render Settings,
+- saves frames to the **save path** set in the project's Render Settings. If
+  none is set, or it uses tokens like `$prj`, frames go to
+  `<project folder>/renders/<project name>/`,
+- switches on **resume after restart** automatically,
+- renders dropped projects **one after another**. Dropping a project that is
+  already in the list resumes it instead of starting over.
+
+The render runs in the background, so you can close the window. Open the app
+again to check progress. **Double-click a job** to open its frames.
+
+Only if the frame range can't be read (see below) does the program ask for it.
+**Frames…** changes the range of a paused or finished job, and **Settings**
+holds the advanced options.
+
+> **How the frame range is read:** the program opens the project with
+> `c4dpy`, the Python that comes with Cinema 4D, next to `Commandline`. Like
+> `Commandline`, it needs a valid license. If it isn't licensed or can't be
+> found, you're simply asked for the range.
+
+> **Drag & drop into the window** uses the small `tkinterdnd2` package, which
+> is installed automatically the first time (internet needed once). Without
+> it, click the box to choose files, or drop files onto the app icon.
 
 > **Unattended render machines:** rendering resumes when the user **logs in**,
 > because Cinema 4D's license needs a user session. On a machine that should
@@ -41,11 +65,14 @@ Open it again at any time to check progress.
 ## Command line
 
 ```bash
-# queue a job and render it now (Ctrl+C stops; it resumes later)
+# render a project with its own frame range and output (Ctrl+C stops; it resumes later)
+python -m c4dguard render "D:/proj/shot010.c4d"
+
+# ...or override the frames / output
 python -m c4dguard render "D:/proj/shot010.c4d" -s 0 -e 250 -o "D:/renders/shot010/"
 
 # or queue several, then render the queue
-python -m c4dguard add  shot010.c4d -s 0 -e 250
+python -m c4dguard add  shot010.c4d
 python -m c4dguard add  shot020.c4d -s 0 -e 120 --take "Final" --extra "-threads 16"
 python -m c4dguard run
 

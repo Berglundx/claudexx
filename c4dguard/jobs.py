@@ -15,6 +15,7 @@ from pathlib import Path
 
 from . import paths
 
+PREPARING = "preparing"   # reading the project's frame range
 QUEUED = "queued"
 RENDERING = "rendering"
 PAUSED = "paused"

@@ -39,6 +39,9 @@ def setup_logging(verbose: bool = False) -> None:
 def resolve_output(scene: Path, output: str | None) -> str:
     """Turn the --output argument into an output *prefix* (folder + file name)."""
     stem = scene.stem
+    if output and Path(output).is_absolute() and not output.endswith(("/", "\\")) \
+            and not Path(output).is_dir():
+        return output
     if not output:
         return str(scene.parent / "renders" / stem / stem)
     out = Path(output).expanduser()
@@ -70,25 +73,42 @@ def spawn_background_runner() -> None:
 
 # ----------------------------------------------------------------- commands
 def cmd_add(args, store: J.JobStore) -> int:
+    from . import project, quick
+    from . import settings as S
     scene = Path(args.scene).expanduser().resolve()
     if not scene.exists():
         print(f"Scene not found: {scene}", file=sys.stderr)
         return 1
-    if args.end < args.start or args.step < 1:
-        print("Invalid frame range", file=sys.stderr)
-        return 1
     exe = args.commandline or ""
-    if not exe and not paths.find_commandline():
+    if not exe and not S.commandline():
         print("Warning: Cinema 4D Commandline not found; pass --commandline or set "
               "C4D_COMMANDLINE before rendering.", file=sys.stderr)
+    start, end, step, output = args.start, args.end, args.step, args.output
+    if start is None or end is None:
+        print(f"Reading render settings from {scene.name} ...")
+        info = project.read_project(scene, exe or S.commandline())
+        if info is None:
+            print("Could not read the frame range from the project; pass --start and --end.",
+                  file=sys.stderr)
+            return 1
+        start = info.start if start is None else start
+        end = info.end if end is None else end
+        step = step or info.step
+        if not output:
+            output = project.output_prefix(scene, info)
+    step = step or 1
+    if end < start or step < 1:
+        print("Invalid frame range", file=sys.stderr)
+        return 1
     job = J.Job(
-        id=J.new_job_id(), scene=str(scene), output=resolve_output(scene, args.output),
-        start=args.start, end=args.end, step=args.step, commandline=exe,
+        id=J.new_job_id(), scene=str(scene), output=resolve_output(scene, output),
+        start=start, end=end, step=step, commandline=exe,
         chunk_size=args.chunk, take=args.take or "",
         extra_args=shlex.split(args.extra or "", posix=sys.platform != "win32"),
         frame_timeout=args.timeout, max_attempts=args.max_attempts,
     )
     store.save(job)
+    quick.ensure_autostart()
     print(f"Added job {job.id}: {scene.name} frames {job.start}-{job.end} -> {job.output}")
     return 0
 
@@ -195,17 +215,25 @@ def cmd_gui(args, store: J.JobStore) -> int:
     try:
         from .gui import main as gui_main
     except ImportError:
+        if getattr(args, "files", None):
+            # No Tkinter: still render the dropped files from the console.
+            rc = 0
+            for f in args.files:
+                ns = build_parser().parse_args(["add", f])
+                rc |= cmd_add(ns, store)
+            spawn_background_runner()
+            return rc
         print("The GUI needs Tkinter (included with the python.org installers). "
               "Use the command line instead, see: python -m c4dguard --help", file=sys.stderr)
         return 1
-    return gui_main()
+    return gui_main(getattr(args, "files", None))
 
 
 def _job_options(p: argparse.ArgumentParser) -> None:
     p.add_argument("scene", help="the .c4d project file")
-    p.add_argument("-s", "--start", type=int, required=True, help="first frame")
-    p.add_argument("-e", "--end", type=int, required=True, help="last frame")
-    p.add_argument("--step", type=int, default=1)
+    p.add_argument("-s", "--start", type=int, help="first frame (default: from the project)")
+    p.add_argument("-e", "--end", type=int, help="last frame (default: from the project)")
+    p.add_argument("--step", type=int, default=0, help="frame step (default: from the project)")
     p.add_argument("-o", "--output", help="output folder or path prefix "
                    "(default: <scene folder>/renders/<scene>/<scene>)")
     p.add_argument("--commandline", help="path to Cinema 4D Commandline (default: auto-detect)")
@@ -263,13 +291,18 @@ def build_parser() -> argparse.ArgumentParser:
                    help="seconds to wait after logon before rendering (default 60)")
     p.set_defaults(func=cmd_autostart)
 
-    p = sub.add_parser("gui", help="open the graphical interface")
+    p = sub.add_parser("gui", help="open the window (optionally rendering the given .c4d files)")
+    p.add_argument("files", nargs="*")
     p.set_defaults(func=cmd_gui)
     return parser
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
+    argv = list(sys.argv[1:] if argv is None else argv)
+    # `c4dguard shot.c4d` (e.g. a file dropped on the app icon) opens the window with it.
+    if argv and argv[0].lower().endswith(".c4d"):
+        argv = ["gui"] + argv
     args = parser.parse_args(argv)
     if not args.command:
         return cmd_gui(args, J.JobStore())
