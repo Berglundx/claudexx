@@ -67,7 +67,6 @@ jobs:
       # Opening the app with a project must read its range and start rendering by itself.
       - name: Smoke test - open window with a project
         shell: bash
-        continue-on-error: true
         env:
           C4DGUARD_HOME: ${{ github.workspace }}/smoke/home
           FAKE_STATE: ${{ github.workspace }}/smoke
@@ -77,7 +76,7 @@ jobs:
           export C4D_COMMANDLINE="$FAKE_COMMANDLINE"
           "$APP_BIN" gui "$SMOKE/proj/gui.c4d" &
           for i in $(seq 1 90); do
-            n=$(ls "$SMOKE/proj/renders/gui" 2>/dev/null | wc -l)
+            n=$( (ls "$SMOKE/proj/renders/gui" 2>/dev/null || true) | wc -l)
             [ "$n" -ge 5 ] && break
             sleep 2
           done
