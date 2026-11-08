@@ -8,13 +8,17 @@ from pathlib import Path
 PNG_END = b"IEND\xaeB`\x82"
 JPEG_END = b"\xff\xd9"
 
+# Image formats Cinema 4D can save. Anything else (temp files etc.) is ignored.
+IMAGE_EXTS = {"png", "jpg", "jpeg", "tif", "tiff", "exr", "psd", "psb", "bmp", "tga", "hdr",
+              "dpx", "iff", "b3d", "rla", "rpf", "pict", "pct", "sgi", "rgb", "avif", "webp"}
+
 # Formats whose files we can check for truncation.
 VERIFIABLE = {".png", ".jpg", ".jpeg"}
 
 
 def _pattern(base: str) -> re.Pattern:
     # shot0001.png, shot_0001.png, shot.0001.exr ... but not shot_diffuse0001.png
-    return re.compile(r"^" + re.escape(base) + r"[._-]?(\d+)\.[A-Za-z0-9]+$")
+    return re.compile(r"^" + re.escape(base) + r"[._-]?(\d+)\.([A-Za-z0-9]+)$")
 
 
 def scan(output_prefix: str) -> dict[int, Path]:
@@ -27,7 +31,7 @@ def scan(output_prefix: str) -> dict[int, Path]:
     found: dict[int, Path] = {}
     for entry in directory.iterdir():
         m = pat.match(entry.name)
-        if m and entry.is_file():
+        if m and m.group(2).lower() in IMAGE_EXTS and entry.is_file():
             found[int(m.group(1))] = entry
     return found
 

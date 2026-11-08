@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import subprocess
 import sys
 import tempfile
@@ -63,7 +64,10 @@ class ProjectInfo:
 
 
 def find_c4dpy(commandline: str | None) -> str | None:
-    """c4dpy lives in the same install as Commandline."""
+    """c4dpy lives in the same install as Commandline ($C4DPY overrides)."""
+    env = os.environ.get("C4DPY")
+    if env and Path(env).is_file():
+        return env
     if not commandline:
         return None
     exe = Path(commandline)

@@ -91,7 +91,8 @@ def kill_tree(proc: subprocess.Popen) -> None:
     try:
         if sys.platform == "win32":
             subprocess.run(["taskkill", "/F", "/T", "/PID", str(proc.pid)],
-                           capture_output=True, check=False)
+                           capture_output=True, check=False,
+                           creationflags=paths.no_window_flags())
         else:
             os.killpg(proc.pid, signal.SIGKILL)
     except (OSError, ProcessLookupError):
@@ -263,7 +264,8 @@ class Runner:
         kwargs: dict = {"stdout": logfile, "stderr": subprocess.STDOUT,
                         "stdin": subprocess.DEVNULL, "cwd": str(Path(job.scene).parent)}
         if sys.platform == "win32":
-            kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
+            # No console window: the guard may run without one (packaged app / logon).
+            kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP | paths.no_window_flags()
         else:
             kwargs["start_new_session"] = True
         try:

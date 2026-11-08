@@ -20,17 +20,31 @@ keeps it going on its own:
 It's plain Python 3.9+ and needs nothing else installed. It runs on Windows,
 macOS and Linux.
 
-## Quick start
+## Install
 
-1. Install **Python 3** from python.org. On Windows, tick *"Add python.exe to
-   PATH"* during setup.
-2. Put this folder somewhere permanent, for example `C:\Tools\C4DRenderGuard`.
-3. Start rendering:
-   - **Windows:** drag your `.c4d` file(s) onto **`C4D Render Guard.bat`**, or
-     double-click it and drop files into the window.
-   - **Mac:** double-click **`Create Mac App.command`** once. It creates
-     **`C4D Render Guard.app`**. Drag `.c4d` files onto that app (or onto its
-     Dock icon), or open it and drop files into the window.
+Download the latest build from this repository's **Releases** page (the
+release called *"latest"*).
+
+**Windows:** download and run **`C4DRenderGuard-Setup.exe`**. No admin rights
+and no Python needed. Windows may warn that the app is from an unknown
+publisher because it isn't code-signed; click **More info → Run anyway**. You
+then get:
+
+- a Start menu entry and a desktop icon (drop `.c4d` files on it),
+- **Render with C4D Render Guard** when you right-click a `.c4d` file,
+- a normal uninstaller under *Settings → Apps*.
+
+(`C4DRenderGuard.exe` on the same page is the same program without an
+installer, if you'd rather just run it.)
+
+**Mac (Apple Silicon):** download **`C4DRenderGuard-mac.zip`**, unzip it and
+move **C4D Render Guard** to *Applications*. The first time, **right-click →
+Open**, because the app isn't notarized by Apple.
+
+## Use it
+
+Drag one or more `.c4d` files onto the app icon, into its window, or (on
+Windows) right-click them and choose **Render with C4D Render Guard**.
 
 That's all. The program:
 
@@ -62,23 +76,41 @@ holds the advanced options.
 > because Cinema 4D's license needs a user session. On a machine that should
 > recover without anyone there, turn on automatic login.
 
+## Running from source (instead of the installer)
+
+Install Python 3 from python.org, then:
+
+- **Windows:** drag `.c4d` files onto `C4D Render Guard.bat`, or double-click
+  it.
+- **Mac:** double-click `Create Mac App.command` once to get a droplet app.
+- **Anywhere:** `python launcher.py` (window) or `python launcher.py <command>`.
+
+To build the installers yourself, run `pip install pyinstaller tkinterdnd2`,
+then `python packaging/build.py`. Then, on Windows, run
+`ISCC packaging\installer.iss` (Inno Setup 6). GitHub Actions
+(`.github/workflows/build.yml`) does all of this automatically on every push
+and publishes the result as the *latest* release.
+
 ## Command line
+
+The installed program also works from a terminal (`C4DRenderGuard.exe <command>`
+on Windows; `python launcher.py <command>` from source):
 
 ```bash
 # render a project with its own frame range and output (Ctrl+C stops; it resumes later)
-python -m c4dguard render "D:/proj/shot010.c4d"
+c4dguard render "D:/proj/shot010.c4d"
 
 # ...or override the frames / output
-python -m c4dguard render "D:/proj/shot010.c4d" -s 0 -e 250 -o "D:/renders/shot010/"
+c4dguard render "D:/proj/shot010.c4d" -s 0 -e 250 -o "D:/renders/shot010/"
 
 # or queue several, then render the queue
-python -m c4dguard add  shot010.c4d
-python -m c4dguard add  shot020.c4d -s 0 -e 120 --take "Final" --extra "-threads 16"
-python -m c4dguard run
+c4dguard add  shot010.c4d
+c4dguard add  shot020.c4d -s 0 -e 120 --take "Final" --extra "-threads 16"
+c4dguard run
 
-python -m c4dguard status            # progress, restarts, last problem
-python -m c4dguard pause  <job-id>   # also: resume, retry, remove (ids can be shortened)
-python -m c4dguard autostart install # resume after reboot (uninstall / status)
+c4dguard status            # progress, restarts, last problem
+c4dguard pause  <job-id>   # also: resume, retry, remove (ids can be shortened)
+c4dguard autostart install # resume after reboot (uninstall / status)
 ```
 
 Useful options for `add` / `render`:

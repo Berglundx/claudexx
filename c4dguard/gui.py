@@ -34,7 +34,8 @@ def _load_dnd():
         import tkinterdnd2
         return tkinterdnd2
     except ImportError:
-        pass
+        if paths.is_frozen():          # the packaged app bundles it; nothing to install
+            return None
     marker = paths.app_home() / "dnd-install-attempted"
     if marker.exists() and time.time() - marker.stat().st_mtime < 86400:
         return None
@@ -184,9 +185,15 @@ def make_app(dnd):
             self.store = J.JobStore()
             self._done_cache: dict[str, tuple[int, int]] = {}
             self._build()
+            if sys.platform == "darwin":
+                # Files dropped on the app's Dock/Finder icon arrive as Apple Events.
+                self.createcommand("::tk::mac::OpenDocument",
+                                   lambda *files: self.submit_files(list(files)))
             for job in self.store.all():           # finish anything interrupted while reading
                 if job.status == J.PREPARING:
                     self._read_project(job)
+            if any(j.status in J.RUNNABLE for j in self.store.all()):
+                self._start_runner()                  # e.g. after an update
             self.after(200, lambda: self.submit_files(files))
             self.refresh()
 

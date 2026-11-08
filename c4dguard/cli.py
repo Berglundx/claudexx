@@ -58,10 +58,8 @@ def progress(job: J.Job) -> tuple[int, int]:
 
 def spawn_background_runner() -> None:
     """Start `c4dguard run` as an independent process (survives closing the caller)."""
-    cmd = [sys.executable, "-m", "c4dguard", "run"]
-    env = dict(os.environ)
-    env["PYTHONPATH"] = autostart.PKG_PARENT + os.pathsep + env.get("PYTHONPATH", "")
-    kwargs: dict = {"env": env, "stdin": subprocess.DEVNULL,
+    cmd = paths.self_command(windowless=True) + ["run"]
+    kwargs: dict = {"stdin": subprocess.DEVNULL,
                     "stdout": subprocess.DEVNULL, "stderr": subprocess.DEVNULL}
     if sys.platform == "win32":
         kwargs["creationflags"] = (subprocess.CREATE_NEW_PROCESS_GROUP
@@ -119,6 +117,8 @@ def cmd_run(args, store: J.JobStore) -> int:
     if args.delay:
         log.info("Waiting %ds for the system to settle before rendering...", args.delay)
         time.sleep(args.delay)
+    if getattr(args, "keep_alive", False):
+        return keep_alive(args)
     only = None
     if args.jobs:
         only = []
@@ -138,6 +138,19 @@ def cmd_run(args, store: J.JobStore) -> int:
     if hasattr(signal, "SIGTERM"):
         signal.signal(signal.SIGTERM, _stop)
     return Runner(store, restart_delay=args.restart_delay, stop_event=stop).run_all(only)
+
+
+def keep_alive(args) -> int:
+    """Run the renderer as a child process and restart it if it ever crashes."""
+    log = logging.getLogger("c4dguard")
+    cmd = paths.self_command(windowless=True) + ["run", "--restart-delay", str(args.restart_delay)]
+    cmd += list(args.jobs or [])
+    while True:
+        rc = subprocess.call(cmd, stdin=subprocess.DEVNULL, creationflags=paths.no_window_flags())
+        if rc == 0:
+            return 0
+        log.error("Renderer stopped unexpectedly (exit code %s); restarting in 30s", rc)
+        time.sleep(30)
 
 
 def cmd_render(args, store: J.JobStore) -> int:
@@ -268,6 +281,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--delay", type=int, default=0, help="wait N seconds before starting")
     p.add_argument("--restart-delay", type=float, default=15.0,
                    help="seconds to wait before relaunching a crashed Cinema 4D")
+    p.add_argument("--keep-alive", action="store_true",
+                   help="restart the renderer itself if it ever crashes (used at logon)")
     p.add_argument("-v", "--verbose", action="store_true")
     p.set_defaults(func=cmd_run)
 
@@ -297,12 +312,25 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _attach_parent_console() -> None:
+    """The Windows .exe has no console of its own (so double-clicking it shows
+    no black window). When it is run from a terminal, print into that one."""
+    if sys.platform != "win32" or not paths.is_frozen() or sys.stdout is not None:
+        return
+    import ctypes
+    if ctypes.windll.kernel32.AttachConsole(-1):  # -1 = parent process's console
+        sys.stdout = open("CONOUT$", "w", encoding="utf-8", errors="replace")
+        sys.stderr = sys.stdout
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     argv = list(sys.argv[1:] if argv is None else argv)
     # `c4dguard shot.c4d` (e.g. a file dropped on the app icon) opens the window with it.
     if argv and argv[0].lower().endswith(".c4d"):
         argv = ["gui"] + argv
+    if argv and argv[0] not in ("gui",) and not argv[0].lower().endswith(".c4d"):
+        _attach_parent_console()
     args = parser.parse_args(argv)
     if not args.command:
         return cmd_gui(args, J.JobStore())

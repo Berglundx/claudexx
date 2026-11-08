@@ -5,6 +5,7 @@ from __future__ import annotations
 import glob
 import os
 import shutil
+import subprocess
 import sys
 from pathlib import Path
 
@@ -86,3 +87,29 @@ def find_commandline() -> str | None:
         if p:
             return p
     return None
+
+
+def is_frozen() -> bool:
+    """True when running as the packaged .exe / .app."""
+    return bool(getattr(sys, "frozen", False))
+
+
+def self_command(windowless: bool = False) -> list[str]:
+    """Command that starts this program again (append arguments to it)."""
+    if is_frozen():
+        return [sys.executable]
+    exe = sys.executable
+    if sys.platform == "win32":
+        low = exe.lower()
+        if windowless and low.endswith("python.exe"):
+            cand = exe[:-len("python.exe")] + "pythonw.exe"
+            exe = cand if Path(cand).exists() else exe
+        elif not windowless and low.endswith("pythonw.exe"):
+            exe = exe[:-len("pythonw.exe")] + "python.exe"
+    launcher = Path(__file__).resolve().parent.parent / "launcher.py"
+    return [exe, str(launcher)]
+
+
+def no_window_flags() -> int:
+    """Windows: keep console programs (Commandline, taskkill) from popping up windows."""
+    return getattr(subprocess, "CREATE_NO_WINDOW", 0) if sys.platform == "win32" else 0

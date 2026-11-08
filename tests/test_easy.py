@@ -1,7 +1,6 @@
 """Tests for drop-a-file usage: reading the project and creating the job."""
 import json
 import os
-import shutil
 import subprocess
 import sys
 import tempfile
@@ -13,12 +12,16 @@ sys.path.insert(0, str(ROOT))
 
 from c4dguard import jobs as J, project, quick  # noqa: E402
 from c4dguard import frames as framelib  # noqa: E402
+from c4dguard import settings as S  # noqa: E402
 from c4dguard.runner import Runner  # noqa: E402
+
+sys.path.insert(0, str(ROOT / "tests"))
+import fakes  # noqa: E402
 
 
 class EasyTest(unittest.TestCase):
     def setUp(self):
-        self.tmp = Path(tempfile.mkdtemp())
+        self.tmp = Path(tempfile.mkdtemp()).resolve()
         os.environ["C4DGUARD_HOME"] = str(self.tmp / "home")
         os.environ["XDG_CONFIG_HOME"] = str(self.tmp / "cfg")   # autostart file goes here
         os.environ["FAKE_STATE"] = str(self.tmp)
@@ -27,12 +30,14 @@ class EasyTest(unittest.TestCase):
         # A fake "Cinema 4D install": Commandline + c4dpy side by side.
         inst = self.tmp / "Maxon Cinema 4D"
         inst.mkdir()
-        self.exe = inst / "Commandline"
-        shutil.copy(ROOT / "tests" / "fake_commandline.py", self.exe)
-        shutil.copy(ROOT / "tests" / "fake_c4dpy.py", inst / "c4dpy")
-        for p in inst.iterdir():
-            p.chmod(0o755)
+        self.exe = fakes.install("fake_commandline.py", inst / "Commandline")
+        c4dpy = fakes.install("fake_c4dpy.py", inst / "c4dpy")
+        if sys.platform == "win32":
+            os.environ["C4DPY"] = str(c4dpy)    # a .cmd isn't found by name next to it
         os.environ["C4D_COMMANDLINE"] = str(self.exe)
+        if sys.platform != "linux":
+            # Don't touch the real registry / LaunchAgents of the test machine.
+            S.save(S.Settings(auto_resume=False))
         self.proj = self.tmp / "My Project"
         self.proj.mkdir()
         self.scene = self.proj / "shot 010.c4d"
@@ -63,7 +68,9 @@ class EasyTest(unittest.TestCase):
         self.assertEqual(project.output_prefix(self.scene, mk("/r/out", save=False)), default)
         self.assertEqual(project.output_prefix(self.scene, mk("frames/beauty.png")),
                          str(self.proj / "frames" / "beauty"))
-        self.assertEqual(project.output_prefix(self.scene, mk("/r/final/")), "/r/final/shot 010")
+        final = str(self.tmp / "final") + os.sep
+        self.assertEqual(project.output_prefix(self.scene, mk(final)),
+                         str((self.tmp / "final" / "shot 010").resolve()))
 
     def test_dropped_file_renders_with_project_settings(self):
         self.set_info(start=5, end=16, path="out/img")
@@ -73,8 +80,9 @@ class EasyTest(unittest.TestCase):
         job = self.store.load(job.id)
         self.assertEqual((job.start, job.end, job.status), (5, 16, J.QUEUED))
         self.assertEqual(job.output, str(self.proj / "out" / "img"))
-        self.assertTrue((self.tmp / "cfg" / "systemd" / "user" / "c4dguard.service").exists(),
-                        "resume-after-reboot should be switched on automatically")
+        if sys.platform == "linux":
+            self.assertTrue((self.tmp / "cfg" / "systemd" / "user" / "c4dguard.service").exists(),
+                            "resume-after-reboot should be switched on automatically")
         Runner(self.store, restart_delay=0.05, poll_seconds=0.05).run_all()
         self.assertEqual(sorted(framelib.scan(job.output)), list(range(5, 17)))
         self.assertEqual(self.store.load(job.id).status, J.DONE)

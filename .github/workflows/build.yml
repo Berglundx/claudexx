@@ -1,0 +1,152 @@
+name: Build apps
+
+on:
+  push:
+    branches: [main, "claude/**"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Unit tests
+        run: python -m unittest discover tests -v
+
+  build:
+    needs: test
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    env:
+      SMOKE: ${{ github.workspace }}/smoke
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install build tools
+        run: python -m pip install pyinstaller tkinterdnd2
+      - name: Build app
+        run: python packaging/build.py
+
+      - name: Locate built program
+        shell: bash
+        run: |
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            echo "APP_BIN=$GITHUB_WORKSPACE/dist/C4DRenderGuard.exe" >> "$GITHUB_ENV"
+          else
+            echo "APP_BIN=$GITHUB_WORKSPACE/dist/C4D Render Guard.app/Contents/MacOS/C4D Render Guard" >> "$GITHUB_ENV"
+          fi
+          python tests/fakes.py "$SMOKE" | sed 's/^/FAKE_/' >> "$GITHUB_ENV"
+
+      # The packaged app must render, survive a Cinema 4D crash and finish.
+      - name: Smoke test - command line render with a crash
+        shell: bash
+        env:
+          C4DGUARD_HOME: ${{ github.workspace }}/smoke/home
+          FAKE_STATE: ${{ github.workspace }}/smoke
+          FAKE_CRASH: "3"
+        run: |
+          "$APP_BIN" render "$SMOKE/proj/cli.c4d" -s 1 -e 6 --commandline "$FAKE_COMMANDLINE" --restart-delay 1
+          ls "$SMOKE/proj/renders/cli"
+          test "$(ls "$SMOKE/proj/renders/cli" | wc -l)" -eq 6
+
+      # Opening the app with a project must read its range and start rendering by itself.
+      - name: Smoke test - open window with a project
+        shell: bash
+        continue-on-error: true
+        env:
+          C4DGUARD_HOME: ${{ github.workspace }}/smoke/home
+          FAKE_STATE: ${{ github.workspace }}/smoke
+          C4DPY: ${{ env.FAKE_C4DPY }}
+          FAKE_C4DPY_INFO: '{"start": 0, "end": 4, "step": 1, "save_image": true, "path": "", "fps": 25}'
+        run: |
+          export C4D_COMMANDLINE="$FAKE_COMMANDLINE"
+          "$APP_BIN" gui "$SMOKE/proj/gui.c4d" &
+          for i in $(seq 1 90); do
+            n=$(ls "$SMOKE/proj/renders/gui" 2>/dev/null | wc -l)
+            [ "$n" -ge 5 ] && break
+            sleep 2
+          done
+          ls "$SMOKE/proj/renders/gui"
+          test "$(ls "$SMOKE/proj/renders/gui" | wc -l)" -eq 5
+
+      - name: Smoke test - resume-after-restart entry
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          & $env:APP_BIN autostart install | Out-Null; Start-Sleep 3
+          $v = (Get-ItemProperty 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run').'C4D Render Guard'
+          Write-Host "Run entry: $v"
+          if ($v -notlike '*C4DRenderGuard.exe*run --keep-alive*') { exit 1 }
+          & $env:APP_BIN autostart uninstall | Out-Null; Start-Sleep 3
+          $left = (Get-ItemProperty 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run').'C4D Render Guard'
+          if ($left) { exit 1 }
+
+      - name: Stop leftover processes
+        if: always()
+        shell: bash
+        run: |
+          if [ "$RUNNER_OS" = "Windows" ]; then taskkill //F //T //IM C4DRenderGuard.exe || true
+          else pkill -f "C4D Render Guard" || true; fi
+
+      - name: Build Windows installer
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          if (-not (Test-Path $iscc)) { choco install innosetup -y --no-progress }
+          $ver = python -c "import c4dguard; print(c4dguard.__version__)"
+          & $iscc "/DAppVersion=$ver" packaging\installer.iss
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: C4DRenderGuard-${{ runner.os }}
+          path: |
+            dist/C4DRenderGuard-Setup.exe
+            dist/C4DRenderGuard.exe
+            dist/C4DRenderGuard-mac.zip
+          if-no-files-found: error
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+      - name: Move the "latest" tag to this build
+        run: |
+          git tag -f latest
+          git push -f origin latest
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: latest
+          name: C4D Render Guard (latest build)
+          prerelease: true
+          files: artifacts/*
+          body: |
+            **Windows:** download **C4DRenderGuard-Setup.exe** and run it (no admin rights needed).
+            Then drag .c4d files onto the desktop icon, into the window, or right-click a .c4d file →
+            "Render with C4D Render Guard". `C4DRenderGuard.exe` is the same program without installer.
+
+            **Mac (Apple Silicon):** download **C4DRenderGuard-mac.zip**, unzip, move the app to Applications,
+            then right-click it → Open the first time. Drag .c4d files onto the app or into its window.
+
+            Built from ${{ github.sha }}.

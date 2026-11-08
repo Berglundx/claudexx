@@ -1,5 +1,4 @@
 import os
-import signal
 import subprocess
 import sys
 import tempfile
@@ -14,25 +13,26 @@ from c4dguard import frames as framelib  # noqa: E402
 from c4dguard import jobs as J  # noqa: E402
 from c4dguard.runner import Runner  # noqa: E402
 
-FAKE = ROOT / "tests" / "fake_commandline.py"
+sys.path.insert(0, str(ROOT / "tests"))
+import fakes  # noqa: E402
 FAKE_ENV = ("FAKE_CRASH", "FAKE_HANG", "FAKE_TRUNCATE", "FAKE_ALWAYS_CRASH", "FAKE_FRAME_SECONDS")
 
 
 class GuardTest(unittest.TestCase):
     def setUp(self):
-        self.tmp = Path(tempfile.mkdtemp())
+        self.tmp = Path(tempfile.mkdtemp()).resolve()
         os.environ["C4DGUARD_HOME"] = str(self.tmp / "home")
         os.environ["FAKE_STATE"] = str(self.tmp)
         for k in FAKE_ENV:
             os.environ.pop(k, None)
-        FAKE.chmod(0o755)
+        self.fake = fakes.install("fake_commandline.py", self.tmp / "Commandline")
         self.scene = self.tmp / "shot.c4d"
         self.scene.write_text("fake scene")
         self.store = J.JobStore()
 
     def make_job(self, **kw) -> J.Job:
         params = dict(id=J.new_job_id(), scene=str(self.scene), output=str(self.tmp / "out" / "shot"),
-                      start=0, end=19, commandline=str(FAKE), chunk_size=6)
+                      start=0, end=19, commandline=str(self.fake), chunk_size=6)
         params.update(kw)
         job = J.Job(**params)
         self.store.save(job)
@@ -105,15 +105,19 @@ class GuardTest(unittest.TestCase):
         job = self.make_job(end=29, chunk_size=10)
         env = dict(os.environ, PYTHONPATH=str(ROOT))
         cmd = [sys.executable, "-m", "c4dguard", "run", "--restart-delay", "0.1"]
-        proc = subprocess.Popen(cmd, env=env, start_new_session=True,
-                                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        group = ({"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP} if sys.platform == "win32"
+                 else {"start_new_session": True})
+        proc = subprocess.Popen(cmd, env=env, stdout=subprocess.DEVNULL,
+                                stderr=subprocess.DEVNULL, **group)
         deadline = time.time() + 30
         while len(framelib.scan(job.output)) < 13 and time.time() < deadline:
             time.sleep(0.05)
         # "Power loss": kill guard and every C4D child instantly.
-        os.killpg(proc.pid, signal.SIGKILL)
+        fakes.kill_tree(proc.pid)
         proc.wait()
-        subprocess.run(["pkill", "-9", "-f", str(FAKE)], check=False)
+        if sys.platform != "win32":   # C4D runs in its own session there; kill it too
+            subprocess.run(["pkill", "-9", "-f", str(self.fake)], check=False)
+        time.sleep(0.5)
         state = self.store.load(job.id)
         self.assertEqual(state.status, J.RENDERING)
         self.assertIsNotNone(state.active_chunk)
@@ -136,7 +140,7 @@ class GuardTest(unittest.TestCase):
         out = self.tmp / "o"
         out.mkdir()
         for name in ("shot0001.png", "shot_0002.png", "shot.0003.exr", "shot_diffuse0004.png",
-                     "other0005.png", "shot0006.png.part"):
+                     "other0005.png", "shot0006.png.part", "shot0007.part", "shot0008.tmp"):
             (out / name).write_bytes(b"x")
         self.assertEqual(sorted(framelib.scan(str(out / "shot"))), [1, 2, 3])
 
