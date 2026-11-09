@@ -65,8 +65,12 @@ holds the advanced options.
 
 > **How the frame range is read:** the program opens the project with
 > `c4dpy`, the Python that comes with Cinema 4D, next to `Commandline`. Like
-> `Commandline`, it needs a valid license. If it isn't licensed or can't be
-> found, you're simply asked for the range.
+> `Commandline`, it needs a valid license. If it can't be found, gives no
+> answer within 90 seconds (for example while waiting on a license prompt), or
+> fails, you're simply asked for the range. While it reads, you can click
+> **Frames…** to type the range yourself and skip the wait. You can also turn
+> the automatic reading off under **Settings**. What `c4dpy` printed is saved
+> as `c4dpy-last.log` in the **Logs** folder.
 
 > **Drag & drop into the window** uses the small `tkinterdnd2` package, which
 > is installed automatically the first time (internet needed once). Without

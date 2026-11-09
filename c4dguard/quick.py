@@ -56,14 +56,25 @@ def ensure_autostart() -> None:
             log.warning("could not enable resume-after-reboot: %s", exc)
 
 
-def read_and_finalize(store: J.JobStore, job: J.Job) -> bool:
-    """Read the frame range with c4dpy. Returns False if it must be asked for."""
+def read_and_finalize(store: J.JobStore, job: J.Job, cancel=None) -> bool:
+    """Read the frame range with c4dpy. Returns False if it must be asked for.
+
+    Never raises: any problem just means "ask the user".
+    """
     scene = Path(job.scene)
-    info = project.read_project(scene, S.commandline())
+    try:
+        info = project.read_project(scene, S.commandline(), cancel=cancel)
+    except Exception:  # noqa: BLE001 - a crash here must never leave the job stuck
+        log.exception("reading %s failed", scene.name)
+        return False
     if info is None:
         return False
-    finalize(store, job, info.start, info.end, info.step, project.output_prefix(scene, info))
-    log.info("[%s] %s: frames %d-%d -> %s", job.id, scene.name, job.start, job.end, job.output)
+    current = store.load(job.id)
+    if current is None or current.status != J.PREPARING:
+        return True       # the user removed it or typed the frames in meanwhile
+    finalize(store, current, info.start, info.end, info.step, project.output_prefix(scene, info))
+    log.info("[%s] %s: frames %d-%d -> %s", job.id, scene.name, current.start, current.end,
+             current.output)
     return True
 
 

@@ -10,6 +10,7 @@ from __future__ import annotations
 import os
 import subprocess
 import sys
+import queue
 import threading
 import time
 import tkinter as tk
@@ -67,9 +68,11 @@ def open_folder(path: Path) -> None:
         subprocess.Popen(["open" if sys.platform == "darwin" else "xdg-open", str(path)])
 
 
-def status_text(job: J.Job, done: int, total: int, runner: bool) -> str:
+def status_text(job: J.Job, done: int, total: int, runner: bool, reading_since: float = 0) -> str:
     if job.status == J.PREPARING:
-        return "Reading project…"
+        secs = int(time.time() - reading_since) if reading_since else 0
+        return (f"Reading project… {secs}s  (Frames… to skip)"
+                if secs >= 3 else "Reading project…")
     if job.status == J.DONE:
         return "Done ✓"
     if job.status == J.PAUSED:
@@ -86,21 +89,27 @@ def status_text(job: J.Job, done: int, total: int, runner: bool) -> str:
 class RangeDialog(tk.Toplevel):
     """Asked only when the frame range cannot be read from the project."""
 
-    def __init__(self, master, scene: Path, values: tuple[int, int, int] | None = None):
+    def __init__(self, master, scene: Path, values: tuple[int, int, int] | None = None,
+                 message: str | None = None, offer_stop_reading: bool = False):
         super().__init__(master)
         self.title(TITLE)
         self.resizable(False, False)
         self.result = None
-        message = (f"Frames to render for “{scene.name}”:" if values else
-                   f"Couldn't read the frame range of “{scene.name}” automatically.\n"
-                   "Which frames should be rendered?")
+        self.v_stop = tk.BooleanVar(value=False)
+        message = message or (f"Frames to render for “{scene.name}”:" if values else
+                              f"Couldn't read the frame range of “{scene.name}” automatically.\n"
+                              "Which frames should be rendered?")
         ttk.Label(self, padding=12, wraplength=360, text=message).grid(row=0, column=0, columnspan=6)
         self.v = [tk.StringVar(value=str(x)) for x in (values or (0, 90, 1))]
         for i, label in enumerate(("From", "To", "Step")):
             ttk.Label(self, text=label).grid(row=1, column=i * 2, padx=(12, 2))
             ttk.Entry(self, textvariable=self.v[i], width=7).grid(row=1, column=i * 2 + 1)
+        if offer_stop_reading:
+            ttk.Checkbutton(self, variable=self.v_stop, text=(
+                "Always ask me (don't try to read projects automatically)")).grid(
+                row=2, column=0, columnspan=6, sticky="w", padx=12, pady=(10, 0))
         b = ttk.Frame(self, padding=12)
-        b.grid(row=2, column=0, columnspan=6, sticky="e")
+        b.grid(row=3, column=0, columnspan=6, sticky="e")
         ttk.Button(b, text="Cancel", command=self.destroy).pack(side="right")
         ttk.Button(b, text="Render", command=self._ok).pack(side="right", padx=6)
         self.bind("<Return>", lambda e: self._ok())
@@ -118,6 +127,10 @@ class RangeDialog(tk.Toplevel):
             messagebox.showerror(TITLE, "“To” must be at least “From”.", parent=self)
             return
         self.result = (a, b, c)
+        if self.v_stop.get():
+            prefs = S.load()
+            prefs.read_from_project = False
+            S.save(prefs)
         self.destroy()
 
 
@@ -131,6 +144,7 @@ class SettingsDialog(tk.Toplevel):
         self.v_chunk = tk.StringVar(value=str(s.chunk_size))
         self.v_timeout = tk.StringVar(value=str(s.frame_timeout))
         self.v_auto = tk.BooleanVar(value=s.auto_resume)
+        self.v_read = tk.BooleanVar(value=s.read_from_project)
         f = ttk.Frame(self, padding=14)
         f.pack(fill="both")
         ttk.Label(f, text="Cinema 4D Commandline").grid(row=0, column=0, sticky="w")
@@ -141,9 +155,11 @@ class SettingsDialog(tk.Toplevel):
         ttk.Label(f, text="Hang timeout, seconds (0 = automatic)").grid(row=2, column=0, sticky="w")
         ttk.Entry(f, textvariable=self.v_timeout, width=8).grid(row=2, column=1, sticky="w", padx=6)
         ttk.Checkbutton(f, text="Resume rendering automatically after the computer restarts",
-                        variable=self.v_auto).grid(row=3, column=0, columnspan=3, sticky="w", pady=8)
+                        variable=self.v_auto).grid(row=3, column=0, columnspan=3, sticky="w", pady=(8, 0))
+        ttk.Checkbutton(f, text="Read the frame range from the project automatically (otherwise ask me)",
+                        variable=self.v_read).grid(row=4, column=0, columnspan=3, sticky="w", pady=8)
         b = ttk.Frame(f)
-        b.grid(row=4, column=0, columnspan=3, sticky="e")
+        b.grid(row=5, column=0, columnspan=3, sticky="e")
         ttk.Button(b, text="Cancel", command=self.destroy).pack(side="right")
         ttk.Button(b, text="Save", command=self._save).pack(side="right", padx=6)
         self.transient(master)
@@ -163,7 +179,7 @@ class SettingsDialog(tk.Toplevel):
         exe = self.v_exe.get().strip()
         s = S.Settings(commandline="" if exe == (paths.find_commandline() or "") else exe,
                        chunk_size=max(1, chunk), frame_timeout=max(0, timeout),
-                       auto_resume=self.v_auto.get())
+                       auto_resume=self.v_auto.get(), read_from_project=self.v_read.get())
         S.save(s)
         try:
             autostart.install() if s.auto_resume else autostart.uninstall()
@@ -184,6 +200,10 @@ def make_app(dnd):
             self.minsize(640, 400)
             self.store = J.JobStore()
             self._done_cache: dict[str, tuple[int, int]] = {}
+            self._results: queue.Queue = queue.Queue()   # (job_id, ok) from reader threads
+            self._reading: dict[str, tuple[float, threading.Event]] = {}
+            self._asking: set[str] = set()      # jobs whose frame dialog is open
+            self.after(250, self._poll_results)
             self._build()
             if sys.platform == "darwin":
                 # Files dropped on the app's Dock/Finder icon arrive as Apple Events.
@@ -219,7 +239,7 @@ def make_app(dnd):
             cols = ("project", "status", "frames", "output")
             self.tree = ttk.Treeview(self, columns=cols, show="headings", height=8)
             for c, title, w in zip(cols, ("Project", "Status", "Progress", "Saved to"),
-                                   (170, 300, 120, 250)):
+                                   (170, 320, 120, 230)):
                 self.tree.heading(c, text=title)
                 self.tree.column(c, width=w, anchor="w")
             self.tree.pack(fill="both", expand=True, padx=12)
@@ -305,24 +325,68 @@ def make_app(dnd):
             self._read_project(job)
 
         def _read_project(self, job: J.Job):
+            if not S.load().read_from_project:
+                self.after(0, lambda: self._ask_frames(job.id, failed=False))
+                return
+            cancel = threading.Event()
+            self._reading[job.id] = (time.time(), cancel)
+
             def work():
-                ok = quick.read_and_finalize(self.store, job)
-                self.after(0, lambda: self._after_read(job, ok))
+                try:
+                    ok = quick.read_and_finalize(self.store, job, cancel=cancel)
+                except Exception:  # noqa: BLE001
+                    ok = False
+                self._results.put((job.id, ok))   # never touch Tk from this thread
             threading.Thread(target=work, daemon=True).start()
 
-        def _after_read(self, job: J.Job, ok: bool):
-            if not ok:
-                current = self.store.load(job.id)
-                if current is None:
-                    return
-                dlg = RangeDialog(self, Path(job.scene))
-                if not dlg.result:
-                    self.store.delete(job.id)
-                    self.refresh(reschedule=False)
-                    return
-                quick.finalize(self.store, current, *dlg.result)
-            self._start_runner()
-            self.refresh(reschedule=False)
+        def _poll_results(self):
+            try:
+                while True:
+                    job_id, ok = self._results.get_nowait()
+                    _, cancel = self._reading.pop(job_id, (0, None))
+                    if cancel is not None and cancel.is_set():
+                        continue                     # user typed the frames meanwhile
+                    if ok:
+                        self._start_runner()
+                        self.refresh(reschedule=False)
+                    else:
+                        self._ask_frames(job_id, failed=True)
+            except queue.Empty:
+                pass
+            self.after(250, self._poll_results)
+
+        def _ask_frames(self, job_id: str, failed: bool):
+            job = self.store.load(job_id)
+            if job is None or job.status != J.PREPARING or job_id in self._asking:
+                return
+            self._asking.add(job_id)
+            try:
+                self._ask_frames_dialog(job, failed)
+            finally:
+                self._asking.discard(job_id)
+
+        def _ask_frames_dialog(self, job: J.Job, failed: bool):
+            job_id = job.id
+            msg = None
+            if failed:
+                msg = (f"Couldn't read the frame range of “{Path(job.scene).name}” "
+                       "automatically (details: Logs → c4dpy-last.log).\n"
+                       "Which frames should be rendered?")
+            else:
+                msg = f"Which frames of “{Path(job.scene).name}” should be rendered?"
+            dlg = RangeDialog(self, Path(job.scene), message=msg, offer_stop_reading=failed)
+            job = self.store.load(job_id)
+            if job is None or job.status != J.PREPARING:
+                return                               # finished reading while the dialog was open
+            if not dlg.result:
+                self.store.delete(job_id)
+            else:
+                quick.finalize(self.store, job, *dlg.result)
+                self._start_runner()
+            try:
+                self.refresh(reschedule=False)
+            except tk.TclError:
+                pass                                 # window was closed meanwhile
 
         def _start_runner(self):
             if not is_runner_active():
@@ -352,7 +416,13 @@ def make_app(dnd):
                 messagebox.showinfo(TITLE, "Select one job first.")
                 return
             job = jobs[0]
-            if job.status in (J.RENDERING, J.QUEUED) or job.status == J.PREPARING:
+            if job.status == J.PREPARING:
+                since, cancel = self._reading.get(job.id, (0, None))
+                if cancel is not None:
+                    cancel.set()   # stops c4dpy; its result is then ignored in _poll_results
+                self._ask_frames(job.id, failed=False)
+                return
+            if job.status in (J.RENDERING, J.QUEUED):
                 messagebox.showinfo(TITLE, "Pause the job first, then change its frames.")
                 return
             dlg = RangeDialog(self, Path(job.scene), (job.start, job.end, job.step))
@@ -408,8 +478,9 @@ def make_app(dnd):
                 done, total = self._progress(job)
                 frames = f"{done} / {total}  ({100 * done // total}%)" if total else ""
                 out = Path(job.output).parent if job.status != J.PREPARING else ""
+                since = self._reading.get(job.id, (0, None))[0]
                 self.tree.insert("", "end", iid=job.id, values=(
-                    Path(job.scene).name, status_text(job, done, total, runner), frames, out))
+                    Path(job.scene).name, status_text(job, done, total, runner, since), frames, out))
             self.tree.selection_set([i for i in selected if self.tree.exists(i)])
             resume = "on" if autostart.is_installed() else "off"
             self.v_info.set(("Rendering in the background. You can close this window."

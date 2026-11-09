@@ -4,6 +4,8 @@ import os
 import subprocess
 import sys
 import tempfile
+import threading
+import time
 import unittest
 from pathlib import Path
 
@@ -25,7 +27,8 @@ class EasyTest(unittest.TestCase):
         os.environ["C4DGUARD_HOME"] = str(self.tmp / "home")
         os.environ["XDG_CONFIG_HOME"] = str(self.tmp / "cfg")   # autostart file goes here
         os.environ["FAKE_STATE"] = str(self.tmp)
-        for k in ("FAKE_CRASH", "FAKE_HANG", "FAKE_TRUNCATE", "FAKE_ALWAYS_CRASH", "FAKE_C4DPY_INFO"):
+        for k in ("FAKE_CRASH", "FAKE_HANG", "FAKE_TRUNCATE", "FAKE_ALWAYS_CRASH", "FAKE_C4DPY_INFO",
+                  "FAKE_C4DPY_HANG"):
             os.environ.pop(k, None)
         # A fake "Cinema 4D install": Commandline + c4dpy side by side.
         inst = self.tmp / "Maxon Cinema 4D"
@@ -56,6 +59,38 @@ class EasyTest(unittest.TestCase):
         self.set_info(start=5, end=16, step=2)
         info = project.read_project(self.scene, str(self.exe))
         self.assertEqual((info.start, info.end, info.step), (5, 16, 2))
+
+    def test_c4dpy_that_answers_but_never_quits(self):
+        self.set_info(start=2, end=9)
+        os.environ["FAKE_C4DPY_HANG"] = "after"
+        t = time.time()
+        info = project.read_project(self.scene, str(self.exe), timeout=60)
+        self.assertEqual((info.start, info.end), (2, 9))
+        self.assertLess(time.time() - t, 15, "must not wait for c4dpy to exit")
+
+    def test_c4dpy_that_never_answers_times_out(self):
+        self.set_info()
+        os.environ["FAKE_C4DPY_HANG"] = "before"
+        t = time.time()
+        self.assertIsNone(project.read_project(self.scene, str(self.exe), timeout=3))
+        self.assertLess(time.time() - t, 15)
+        self.assertIn("banner", (Path(os.environ["C4DGUARD_HOME"]) / "logs" / "c4dpy-last.log").read_text())
+
+    def test_reading_can_be_cancelled(self):
+        self.set_info()
+        os.environ["FAKE_C4DPY_HANG"] = "before"
+        cancel = threading.Event()
+        threading.Timer(1.0, cancel.set).start()
+        t = time.time()
+        self.assertIsNone(project.read_project(self.scene, str(self.exe), timeout=60, cancel=cancel))
+        self.assertLess(time.time() - t, 15)
+
+    def test_typed_frames_win_over_late_project_read(self):
+        self.set_info(start=5, end=16)
+        job = quick.new_pending_job(self.store, self.scene, S.load())
+        quick.finalize(self.store, self.store.load(job.id), 100, 110)   # user typed them first
+        self.assertTrue(quick.read_and_finalize(self.store, job))
+        self.assertEqual((self.store.load(job.id).start, self.store.load(job.id).end), (100, 110))
 
     def test_unreadable_project_returns_none(self):
         self.assertIsNone(project.read_project(self.scene, str(self.exe)))

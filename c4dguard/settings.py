@@ -15,6 +15,7 @@ class Settings:
     chunk_size: int = 10
     frame_timeout: int = 0       # 0 = automatic
     auto_resume: bool = True     # resume after reboot (installs the startup entry)
+    read_from_project: bool = True   # read frame range/output with c4dpy (else ask)
 
 
 def _path():
