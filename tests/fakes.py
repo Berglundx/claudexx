@@ -37,7 +37,6 @@ if __name__ == "__main__":
     (base / "C4D").mkdir(parents=True, exist_ok=True)
     (base / "proj").mkdir(exist_ok=True)
     exe = install("fake_commandline.py", base / "C4D" / "Commandline")
-    c4dpy = install("fake_c4dpy.py", base / "C4D" / "c4dpy")
     for name in ("cli", "gui"):
         (base / "proj" / f"{name}.c4d").write_text("fake")
-    print(f"COMMANDLINE={exe}\nC4DPY={c4dpy}")
+    print(f"COMMANDLINE={exe}")

@@ -8,6 +8,8 @@ Env controls (each failure happens once, tracked with marker files in FAKE_STATE
   FAKE_HANG           comma list of frames at which to hang forever
   FAKE_TRUNCATE       comma list of frames to write truncated, then crash
   FAKE_ALWAYS_CRASH   frame that crashes on every attempt
+  FAKE_MODE           "nosave": exit 0 without saving; "license": print a license
+                      error and exit 1; "wrongname": save frames as <prefix>_v2_0000.png
 """
 import os
 import sys
@@ -43,7 +45,15 @@ def main():
     start, end, step = int(a[i + 1]), int(a[i + 2]), int(a[i + 3])
     prefix = a[a.index("-oimage") + 1]
     assert Path(scene).exists(), scene
+    assert "-nogui" not in a, "Commandline does not take -nogui"
     print(f"Rendering {scene} {start}-{end}", flush=True)
+    mode = os.environ.get("FAKE_MODE", "")
+    if mode == "license":
+        print("Error: No valid license found. Please log in using the Maxon App.", flush=True)
+        return 1
+    if mode == "nosave":
+        print("Rendering successful: 0.1 sec.", flush=True)
+        return 0
     secs = float(os.environ.get("FAKE_FRAME_SECONDS", "0.1"))
     always = os.environ.get("FAKE_ALWAYS_CRASH")
     for f in range(start, end + 1, step):
@@ -57,7 +67,7 @@ def main():
             print(f"HANG at {f}", flush=True)
             while True:
                 time.sleep(1)
-        out = Path(f"{prefix}{f:04d}.png")
+        out = Path(f"{prefix}_v2_{f:04d}.png" if mode == "wrongname" else f"{prefix}{f:04d}.png")
         if once("FAKE_TRUNCATE", f):
             out.write_bytes(png_bytes()[:20])
             os._exit(139)

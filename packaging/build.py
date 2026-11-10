@@ -28,10 +28,37 @@ def pyinstaller(*args: str) -> None:
     subprocess.run(cmd, check=True, cwd=ROOT)
 
 
+def windows_version_file() -> Path:
+    """Version resource shown in the exe's Properties → Details."""
+    nums = tuple(int(x) for x in (__version__.split(".") + ["0", "0", "0"])[:4])
+    text = f"""VSVersionInfo(
+  ffi=FixedFileInfo(filevers={nums}, prodvers={nums}, mask=0x3f, flags=0x0,
+                    OS=0x40004, fileType=0x1, subtype=0x0, date=(0, 0)),
+  kids=[
+    StringFileInfo([StringTable('040904B0', [
+      StringStruct('CompanyName', 'C4D Render Guard'),
+      StringStruct('FileDescription', 'C4D Render Guard'),
+      StringStruct('FileVersion', '{__version__}'),
+      StringStruct('InternalName', 'C4DRenderGuard'),
+      StringStruct('OriginalFilename', 'C4DRenderGuard.exe'),
+      StringStruct('ProductName', 'C4D Render Guard'),
+      StringStruct('ProductVersion', '{__version__}')])]),
+    VarFileInfo([VarStruct('Translation', [1033, 1200])])
+  ]
+)
+"""
+    path = ROOT / "build" / "version_info.txt"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(text, encoding="utf-8")
+    return path
+
+
 def main() -> None:
     shutil.rmtree(DIST, ignore_errors=True)
+    print(f"Building C4D Render Guard {__version__}", flush=True)
     if sys.platform == "win32":
-        pyinstaller("--onefile", "--windowed", "--name", "C4DRenderGuard")
+        pyinstaller("--onefile", "--windowed", "--name", "C4DRenderGuard",
+                    "--version-file", str(windows_version_file()))
     elif sys.platform == "darwin":
         name = "C4D Render Guard"
         pyinstaller("--windowed", "--name", name,

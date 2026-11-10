@@ -46,39 +46,41 @@ Open**, because the app isn't notarized by Apple.
 Drag one or more `.c4d` files onto the app icon, into its window, or (on
 Windows) right-click them and choose **Render with C4D Render Guard**.
 
-That's all. The program:
+A small window asks **which frames to render** (it remembers your last
+range) and **where to save them**. The default is
+`<project folder>/renders/<project name>/`. Click **Render** and that's it.
+The program also:
 
-- reads the **frame range** from the project's own Render Settings,
-- saves frames to the **save path** set in the project's Render Settings. If
-  none is set, or it uses tokens like `$prj`, frames go to
-  `<project folder>/renders/<project name>/`,
 - switches on **resume after restart** automatically,
-- renders dropped projects **one after another**. Dropping a project that is
-  already in the list resumes it instead of starting over.
+- renders dropped projects **one after another**,
+- keeps rendering in the background, so you can close the window. Open the
+  app again to check progress, and **double-click a job** to open its frames.
 
-The render runs in the background, so you can close the window. Open the app
-again to check progress. **Double-click a job** to open its frames.
-
-Only if the frame range can't be read (see below) does the program ask for it.
-**Frames…** changes the range of a paused or finished job, and **Settings**
-holds the advanced options.
-
-> **How the frame range is read:** the program opens the project with
-> `c4dpy`, the Python that comes with Cinema 4D, next to `Commandline`. Like
-> `Commandline`, it needs a valid license. If it can't be found, gives no
-> answer within 90 seconds (for example while waiting on a license prompt), or
-> fails, you're simply asked for the range. While it reads, you can click
-> **Frames…** to type the range yourself and skip the wait. You can also turn
-> the automatic reading off under **Settings**. What `c4dpy` printed is saved
-> as `c4dpy-last.log` in the **Logs** folder.
-
-> **Drag & drop into the window** uses the small `tkinterdnd2` package, which
-> is installed automatically the first time (internet needed once). Without
-> it, click the box to choose files, or drop files onto the app icon.
+**Frames…** changes the range of a paused or finished job. **Settings** holds
+the advanced options.
 
 > **Unattended render machines:** rendering resumes when the user **logs in**,
 > because Cinema 4D's license needs a user session. On a machine that should
 > recover without anyone there, turn on automatic login.
+
+## If nothing renders
+
+When Cinema 4D runs but produces no frames, the job stops with **Failed**
+instead of retrying. **Double-click it** (or select it and click
+**Details…**) to see why, including everything Cinema 4D printed. Use **Copy
+to clipboard** to send it to someone. The usual causes:
+
+- **No license for the command-line renderer.** Cinema 4D's `Commandline`
+  needs a license, just like the app. Log in with the Maxon App.
+- **Saving is switched off.** In the project's *Render Settings → Save*,
+  **Save** (Regular Image) must be ticked and a **Format** chosen. The
+  renderer saves nothing otherwise. The app sets the folder and file name;
+  the format comes from the project.
+- **Different file names.** Frames are expected as `name0000.ext`. If the
+  project's *Name* format differs, the error says what was found instead.
+- **The project doesn't render in Cinema 4D itself** (missing plugin,
+  textures or renderer). Open it in Cinema 4D and render one frame to the
+  Picture Viewer.
 
 ## Running from source (instead of the installer)
 
@@ -101,14 +103,11 @@ The installed program also works from a terminal (`C4DRenderGuard.exe <command>`
 on Windows; `python launcher.py <command>` from source):
 
 ```bash
-# render a project with its own frame range and output (Ctrl+C stops; it resumes later)
-c4dguard render "D:/proj/shot010.c4d"
-
-# ...or override the frames / output
+# render frames 0-250 (Ctrl+C stops; it resumes later)
 c4dguard render "D:/proj/shot010.c4d" -s 0 -e 250 -o "D:/renders/shot010/"
 
 # or queue several, then render the queue
-c4dguard add  shot010.c4d
+c4dguard add  shot010.c4d -s 0 -e 250
 c4dguard add  shot020.c4d -s 0 -e 120 --take "Final" --extra "-threads 16"
 c4dguard run
 
@@ -138,7 +137,7 @@ Useful options for `add` / `render`:
 - Progress comes from **the frames actually on disk**, so nothing is lost even
   if the guard itself is killed. Before each launch the guard scans the output
   folder, deletes broken frames and renders the next chunk of missing ones with
-  `Commandline -nogui -render <scene> -frame a b step -oimage <output>`.
+  `Commandline -render <scene> -frame a b step -oimage <output>`.
 - While Cinema 4D runs, the job remembers which frames it is working on. If
   the guard starts and finds that record still there, the machine or the app
   died mid-render, so it cleans up the frame that may be partial before

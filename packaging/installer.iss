@@ -8,6 +8,8 @@
 AppId={{6C2F4E7A-4B1D-4C9A-9E3B-C4D0C4D0C4D0}
 AppName=C4D Render Guard
 AppVersion={#AppVersion}
+AppVerName=C4D Render Guard {#AppVersion}
+VersionInfoVersion={#AppVersion}
 AppPublisher=C4D Render Guard
 DefaultDirName={autopf}\C4D Render Guard
 DefaultGroupName=C4D Render Guard

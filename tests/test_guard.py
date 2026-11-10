@@ -15,7 +15,8 @@ from c4dguard.runner import Runner  # noqa: E402
 
 sys.path.insert(0, str(ROOT / "tests"))
 import fakes  # noqa: E402
-FAKE_ENV = ("FAKE_CRASH", "FAKE_HANG", "FAKE_TRUNCATE", "FAKE_ALWAYS_CRASH", "FAKE_FRAME_SECONDS")
+FAKE_ENV = ("FAKE_CRASH", "FAKE_HANG", "FAKE_TRUNCATE", "FAKE_ALWAYS_CRASH", "FAKE_FRAME_SECONDS",
+            "FAKE_MODE")
 
 
 class GuardTest(unittest.TestCase):
@@ -135,6 +136,34 @@ class GuardTest(unittest.TestCase):
         rerendered = [f for f in kept if after[f].stat().st_mtime_ns != kept[f]]
         self.assertEqual(rerendered, [], "finished frames must not be rendered again")
         self.assertGreaterEqual(self.store.load(job.id).restarts, 1)
+
+    def assert_fails_at_once(self, needle):
+        job = self.make_job(max_attempts=5)
+        self.run_guard()
+        j = self.store.load(job.id)
+        self.assertEqual(j.status, J.FAILED)
+        self.assertEqual(j.restarts, 0, "should not retry a render that can never work")
+        self.assertIn(needle, j.last_error)
+        return j
+
+    def test_saves_nothing_fails_with_explanation(self):
+        os.environ["FAKE_MODE"] = "nosave"
+        j = self.assert_fails_at_once("without saving any images")
+        self.assertIn("Rendering successful", j.last_error)    # what C4D printed
+
+    def test_license_error_is_reported(self):
+        os.environ["FAKE_MODE"] = "license"
+        self.assert_fails_at_once("no valid license")
+
+    def test_unexpected_file_names_are_reported(self):
+        os.environ["FAKE_MODE"] = "wrongname"
+        self.assert_fails_at_once("shot_v2_0000.png")
+
+    def test_crash_message_includes_c4d_output(self):
+        os.environ["FAKE_CRASH"] = "3"
+        job = self.make_job(end=5, max_attempts=1)
+        self.run_guard()
+        self.assertIn("CRASH at 3", self.store.load(job.id).last_error)
 
     def test_scan_ignores_multipass_and_other_files(self):
         out = self.tmp / "o"

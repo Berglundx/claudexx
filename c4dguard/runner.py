@@ -76,7 +76,7 @@ def is_runner_active() -> bool:
 
 
 def build_command(job: J.Job, exe: str, chunk: list[int]) -> list[str]:
-    cmd = [exe, "-nogui", "-render", job.scene,
+    cmd = [exe, "-render", job.scene,
            "-frame", str(chunk[0]), str(chunk[-1]), str(job.step),
            "-oimage", job.output]
     if job.take:
@@ -244,6 +244,8 @@ class Runner:
                 log.error("[%s] %s", job.id, job.last_error)
                 return
             ok = self._render_chunk(job, exe, chunk)
+            if job.status in (J.FAILED, J.PAUSED):
+                return                      # given up (see last_error) or paused by the user
             if not ok and not self.stop.is_set():
                 delay = min(self.restart_delay * max(1, job.attempts.get(str(chunk[0]), 1)),
                             max(self.restart_delay, 120))
@@ -261,6 +263,7 @@ class Runner:
         logfile = open(paths.logs_dir() / f"{job.id}.c4d.log", "ab")
         logfile.write(f"\n===== {time.ctime()} :: {subprocess.list2cmdline(cmd)}\n".encode())
         logfile.flush()
+        log_path, log_offset = Path(logfile.name), logfile.tell()
         kwargs: dict = {"stdout": logfile, "stderr": subprocess.STDOUT,
                         "stdin": subprocess.DEVNULL, "cwd": str(Path(job.scene).parent)}
         if sys.platform == "win32":
@@ -332,10 +335,47 @@ class Runner:
             job.active_chunk = None
             self.store.save(job)
             return True
+        output = c4d_output(log_path, log_offset)
         if not reason:
             reason = f"Cinema 4D exited before rendering frame {missing[0]}"
         self._discard_suspect_frame(job, job.active_chunk)
+
+        # Some failures will never fix themselves by restarting: stop right away
+        # and say what Cinema 4D reported instead of retrying 5 times.
+        fatal = self._diagnose(job, chunk, started, code, output)
+        if fatal:
+            job.status, job.last_error, job.active_chunk = J.FAILED, fatal, None
+            self.store.save(job)
+            log.error("[%s] %s", job.id, fatal)
+            return True
+        if output:
+            reason += f". Cinema 4D said: {last_lines(output, 3)}"
         return self._chunk_failed(job, chunk, reason)
+
+    def _diagnose(self, job: J.Job, chunk: list[int], started: float, code,
+                  output: str) -> str | None:
+        """Return an error message if retrying is pointless, else None."""
+        said = f" Cinema 4D said: {last_lines(output, 4)}" if output else ""
+        bad = ("no ", "not ", "fail", "error", "invalid", "expired", "missing", "denied")
+        license_lines = [ln for ln in output.lower().splitlines()
+                         if "licens" in ln and any(w in ln for w in bad)]
+        if license_lines:
+            return ("Cinema 4D's Commandline has no valid license. Log in with the Maxon App "
+                    "and make sure a Commandline/Team Render license is available." + said)
+        rendered = [f for f in framelib.scan(job.output) if f in chunk]
+        if rendered:
+            return None                     # it was making progress: a real crash
+        known = set(framelib.scan(job.output).values())
+        stray = [p for p in new_images(Path(job.output).parent, started) if p not in known]
+        if stray:
+            return (f"Cinema 4D saved images, but not with the expected names "
+                    f"(expected {Path(job.output).name}0000.ext, found {stray[0].name}). "
+                    "Check the file name settings in Render Settings → Save." + said)
+        if code == 0:
+            return ("Cinema 4D finished without saving any images. In the project's Render "
+                    "Settings, make sure Save → Regular Image is switched on (the renderer "
+                    "only saves when it is), and that the project renders in Cinema 4D." + said)
+        return None
 
     def _chunk_failed(self, job: J.Job, chunk: list[int], reason: str) -> bool:
         missing = [f for f in self._remaining(job) if f in chunk] or chunk
@@ -348,6 +388,33 @@ class Runner:
         log.warning("[%s] render crashed at frame %s (attempt %d/%d): %s",
                     job.id, key, job.attempts[key], job.max_attempts, reason)
         return False
+
+
+IMAGE_SUFFIXES = {"." + e for e in framelib.IMAGE_EXTS}
+
+
+def c4d_output(path: Path, offset: int) -> str:
+    """What Cinema 4D printed during one launch."""
+    try:
+        with open(path, "rb") as fh:
+            fh.seek(offset)
+            return fh.read().decode("utf-8", "replace").strip()
+    except OSError:
+        return ""
+
+
+def last_lines(text: str, n: int) -> str:
+    lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
+    return " | ".join(lines[-n:])[:500]
+
+
+def new_images(directory: Path, since: float) -> list[Path]:
+    """Image files written in `directory` since `since` (any name)."""
+    try:
+        return sorted(p for p in directory.iterdir()
+                      if p.suffix.lower() in IMAGE_SUFFIXES and p.stat().st_mtime >= since - 2)
+    except OSError:
+        return []
 
 
 def _unlink(path: Path) -> None:

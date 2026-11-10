@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from dataclasses import asdict, dataclass, fields
+from dataclasses import asdict, dataclass, field, fields
 
 from . import paths
 from .jobs import _atomic_write
@@ -15,7 +15,7 @@ class Settings:
     chunk_size: int = 10
     frame_timeout: int = 0       # 0 = automatic
     auto_resume: bool = True     # resume after reboot (installs the startup entry)
-    read_from_project: bool = True   # read frame range/output with c4dpy (else ask)
+    last_range: list = field(default_factory=lambda: [0, 90, 1])   # prefill for the next drop
 
 
 def _path():

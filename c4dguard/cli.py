@@ -14,7 +14,7 @@ import time
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
-from . import autostart, paths
+from . import __version__, autostart, paths
 from . import frames as framelib
 from . import jobs as J
 from .runner import Runner, is_runner_active
@@ -81,26 +81,13 @@ def cmd_add(args, store: J.JobStore) -> int:
     if not exe and not S.commandline():
         print("Warning: Cinema 4D Commandline not found; pass --commandline or set "
               "C4D_COMMANDLINE before rendering.", file=sys.stderr)
-    start, end, step, output = args.start, args.end, args.step, args.output
-    if start is None or end is None:
-        print(f"Reading render settings from {scene.name} ...")
-        info = project.read_project(scene, exe or S.commandline())
-        if info is None:
-            print("Could not read the frame range from the project; pass --start and --end.",
-                  file=sys.stderr)
-            return 1
-        start = info.start if start is None else start
-        end = info.end if end is None else end
-        step = step or info.step
-        if not output:
-            output = project.output_prefix(scene, info)
-    step = step or 1
-    if end < start or step < 1:
+    if args.end < args.start or args.step < 1:
         print("Invalid frame range", file=sys.stderr)
         return 1
     job = J.Job(
-        id=J.new_job_id(), scene=str(scene), output=resolve_output(scene, output),
-        start=start, end=end, step=step, commandline=exe,
+        id=J.new_job_id(), scene=str(scene),
+        output=resolve_output(scene, args.output) if args.output else project.default_output(scene),
+        start=args.start, end=args.end, step=args.step, commandline=exe,
         chunk_size=args.chunk, take=args.take or "",
         extra_args=shlex.split(args.extra or "", posix=sys.platform != "win32"),
         frame_timeout=args.timeout, max_attempts=args.max_attempts,
@@ -228,14 +215,6 @@ def cmd_gui(args, store: J.JobStore) -> int:
     try:
         from .gui import main as gui_main
     except ImportError:
-        if getattr(args, "files", None):
-            # No Tkinter: still render the dropped files from the console.
-            rc = 0
-            for f in args.files:
-                ns = build_parser().parse_args(["add", f])
-                rc |= cmd_add(ns, store)
-            spawn_background_runner()
-            return rc
         print("The GUI needs Tkinter (included with the python.org installers). "
               "Use the command line instead, see: python -m c4dguard --help", file=sys.stderr)
         return 1
@@ -244,9 +223,9 @@ def cmd_gui(args, store: J.JobStore) -> int:
 
 def _job_options(p: argparse.ArgumentParser) -> None:
     p.add_argument("scene", help="the .c4d project file")
-    p.add_argument("-s", "--start", type=int, help="first frame (default: from the project)")
-    p.add_argument("-e", "--end", type=int, help="last frame (default: from the project)")
-    p.add_argument("--step", type=int, default=0, help="frame step (default: from the project)")
+    p.add_argument("-s", "--start", type=int, required=True, help="first frame")
+    p.add_argument("-e", "--end", type=int, required=True, help="last frame")
+    p.add_argument("--step", type=int, default=1, help="frame step (default 1)")
     p.add_argument("-o", "--output", help="output folder or path prefix "
                    "(default: <scene folder>/renders/<scene>/<scene>)")
     p.add_argument("--commandline", help="path to Cinema 4D Commandline (default: auto-detect)")
@@ -262,8 +241,9 @@ def _job_options(p: argparse.ArgumentParser) -> None:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        prog="c4dguard",
+        prog=f"c4dguard {__version__}",
         description="Render Cinema 4D projects and automatically recover from crashes and restarts.")
+    parser.add_argument("--version", action="version", version=__version__)
     sub = parser.add_subparsers(dest="command")
 
     p = sub.add_parser("add", help="queue a render job")

@@ -27,21 +27,14 @@ def existing_job(store: J.JobStore, scene: Path) -> J.Job | None:
     return matches[-1] if matches else None
 
 
-def new_pending_job(store: J.JobStore, scene: Path, prefs: S.Settings) -> J.Job:
+def create_job(store: J.JobStore, scene: Path, prefs: S.Settings, start: int, end: int,
+               step: int = 1, output: str | None = None) -> J.Job:
+    """A ready-to-render job for a dropped project."""
     job = J.Job(id=J.new_job_id(), scene=str(scene.resolve()),
-                output=project.output_prefix(scene, None), start=0, end=0,
+                output=output or project.default_output(scene),
+                start=start, end=max(start, end), step=max(1, step),
                 commandline=prefs.commandline, chunk_size=prefs.chunk_size,
-                frame_timeout=prefs.frame_timeout, status=J.PREPARING)
-    store.save(job)
-    return job
-
-
-def finalize(store: J.JobStore, job: J.Job, start: int, end: int, step: int = 1,
-             output: str | None = None) -> J.Job:
-    job.start, job.end, job.step = start, max(start, end), max(1, step)
-    if output:
-        job.output = output
-    job.status = J.QUEUED
+                frame_timeout=prefs.frame_timeout, status=J.QUEUED)
     store.save(job)
     ensure_autostart()
     return job
@@ -54,28 +47,6 @@ def ensure_autostart() -> None:
             log.info("Enabled resume-after-reboot")
         except OSError as exc:
             log.warning("could not enable resume-after-reboot: %s", exc)
-
-
-def read_and_finalize(store: J.JobStore, job: J.Job, cancel=None) -> bool:
-    """Read the frame range with c4dpy. Returns False if it must be asked for.
-
-    Never raises: any problem just means "ask the user".
-    """
-    scene = Path(job.scene)
-    try:
-        info = project.read_project(scene, S.commandline(), cancel=cancel)
-    except Exception:  # noqa: BLE001 - a crash here must never leave the job stuck
-        log.exception("reading %s failed", scene.name)
-        return False
-    if info is None:
-        return False
-    current = store.load(job.id)
-    if current is None or current.status != J.PREPARING:
-        return True       # the user removed it or typed the frames in meanwhile
-    finalize(store, current, info.start, info.end, info.step, project.output_prefix(scene, info))
-    log.info("[%s] %s: frames %d-%d -> %s", job.id, scene.name, current.start, current.end,
-             current.output)
-    return True
 
 
 # ------------------------------------------------ hand-off to an open window

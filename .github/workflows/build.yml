@@ -64,17 +64,16 @@ jobs:
           ls "$SMOKE/proj/renders/cli"
           test "$(ls "$SMOKE/proj/renders/cli" | wc -l)" -eq 6
 
-      # Opening the app with a project must read its range and start rendering by itself.
-      - name: Smoke test - open window with a project
+      # Opening the app must pick up a queued job and render it in the background.
+      - name: Smoke test - window starts queued renders
         shell: bash
         env:
           C4DGUARD_HOME: ${{ github.workspace }}/smoke/home
           FAKE_STATE: ${{ github.workspace }}/smoke
-          C4DPY: ${{ env.FAKE_C4DPY }}
-          FAKE_C4DPY_INFO: '{"start": 0, "end": 4, "step": 1, "save_image": true, "path": "", "fps": 25}'
         run: |
           export C4D_COMMANDLINE="$FAKE_COMMANDLINE"
-          "$APP_BIN" gui "$SMOKE/proj/gui.c4d" &
+          "$APP_BIN" add "$SMOKE/proj/gui.c4d" -s 0 -e 4
+          "$APP_BIN" gui &
           for i in $(seq 1 90); do
             n=$( (ls "$SMOKE/proj/renders/gui" 2>/dev/null || true) | wc -l)
             [ "$n" -ge 5 ] && break
@@ -82,6 +81,15 @@ jobs:
           done
           ls "$SMOKE/proj/renders/gui"
           test "$(ls "$SMOKE/proj/renders/gui" | wc -l)" -eq 5
+
+      - name: Check version stamped in the exe
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $want = python -c "import c4dguard; print(c4dguard.__version__)"
+          $got = (Get-Item $env:APP_BIN).VersionInfo.ProductVersion
+          Write-Host "exe version: $got (expected $want)"
+          if ($got -ne $want) { exit 1 }
 
       - name: Smoke test - resume-after-restart entry
         if: runner.os == 'Windows'
@@ -130,6 +138,8 @@ jobs:
         with:
           path: artifacts
           merge-multiple: true
+      - name: Read version
+        run: echo "VERSION=$(python3 -c 'import c4dguard; print(c4dguard.__version__)')" >> "$GITHUB_ENV"
       - name: Move the "latest" tag to this build
         run: |
           git tag -f latest
@@ -137,15 +147,16 @@ jobs:
       - uses: softprops/action-gh-release@v2
         with:
           tag_name: latest
-          name: C4D Render Guard (latest build)
+          name: C4D Render Guard ${{ env.VERSION }} (latest build)
           prerelease: true
           files: artifacts/*
           body: |
             **Windows:** download **C4DRenderGuard-Setup.exe** and run it (no admin rights needed).
             Then drag .c4d files onto the desktop icon, into the window, or right-click a .c4d file →
-            "Render with C4D Render Guard". `C4DRenderGuard.exe` is the same program without installer.
+            "Render with C4D Render Guard", and enter the frames to render.
+            `C4DRenderGuard.exe` is the same program without installer.
 
             **Mac (Apple Silicon):** download **C4DRenderGuard-mac.zip**, unzip, move the app to Applications,
             then right-click it → Open the first time. Drag .c4d files onto the app or into its window.
 
-            Built from ${{ github.sha }}.
+            Version ${{ env.VERSION }}, built from ${{ github.sha }}.
