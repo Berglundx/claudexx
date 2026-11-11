@@ -113,3 +113,107 @@ def self_command(windowless: bool = False) -> list[str]:
 def no_window_flags() -> int:
     """Windows: keep console programs (Commandline, taskkill) from popping up windows."""
     return getattr(subprocess, "CREATE_NO_WINDOW", 0) if sys.platform == "win32" else 0
+
+
+# ----------------------------------------------------------- render programs
+APP = "app"                    # open Cinema 4D visibly and render in the Picture Viewer
+BACKGROUND = "background"      # Cinema 4D itself, without a window (-nogui -render)
+COMMANDLINE = "commandline"    # the separate Commandline renderer
+MODES = (APP, BACKGROUND, COMMANDLINE)
+
+
+def install_dir_of(exe: str) -> Path:
+    """Cinema 4D's install folder, given any program inside it."""
+    p = Path(exe)
+    if p.is_dir():
+        return p
+    for parent in p.parents:                 # macOS: step out of Something.app/Contents/MacOS
+        if parent.suffix == ".app":
+            return parent.parent
+    return p.parent
+
+
+def find_install() -> Path | None:
+    exe = find_commandline()
+    return install_dir_of(exe) if exe else None
+
+
+def find_app(install: str | Path | None = None) -> str | None:
+    """The Cinema 4D application itself ($C4D_APP overrides)."""
+    env = os.environ.get("C4D_APP")
+    if env and Path(env).exists():
+        return env
+    root = Path(install) if install else find_install()
+    if not root:
+        return None
+    root = install_dir_of(str(root))
+    for name in ("Cinema 4D.exe", "CINEMA 4D.exe",
+                 "Cinema 4D.app/Contents/MacOS/Cinema 4D",
+                 "CINEMA 4D.app/Contents/MacOS/CINEMA 4D",
+                 "bin/Cinema 4D", "Cinema 4D"):
+        p = root / name
+        if p.is_file():
+            return str(p)
+    return None
+
+
+def find_commandline_in(install: str | Path | None = None) -> str | None:
+    env = os.environ.get("C4D_COMMANDLINE")
+    if env and Path(env).exists():
+        return env
+    if not install:
+        return find_commandline()
+    root = install_dir_of(str(install))
+    for name in ("Commandline.exe", "Commandline.app/Contents/MacOS/Commandline",
+                 "bin/Commandline", "Commandline"):
+        p = root / name
+        if p.is_file():
+            return str(p)
+    return None
+
+
+def program_for(mode: str, install: str | Path | None = None) -> str | None:
+    """The executable that renders in the given mode."""
+    return find_commandline_in(install) if mode == COMMANDLINE else find_app(install)
+
+
+# ------------------------------------------------- starting other programs
+def isolate_from_bundle() -> None:
+    """Undo what the packaged app (PyInstaller) does to the process so that
+    programs we start - Cinema 4D above all - load their *own* libraries.
+
+    On Windows the bootloader calls SetDllDirectory(<our temp folder>), and
+    child processes inherit that: Cinema 4D would then find our copies of
+    common DLLs (VC runtime, OpenSSL, zlib, Tcl/Tk, ...) before its own.
+    """
+    if not is_frozen():
+        return
+    if sys.platform == "win32":
+        try:
+            import ctypes
+            ctypes.windll.kernel32.SetDllDirectoryW(None)
+        except Exception:  # noqa: BLE001
+            pass
+
+
+def child_env(extra: dict[str, str] | None = None, same_app: bool = False) -> dict[str, str]:
+    """Environment for a program we start.
+
+    same_app=True is for starting another copy of this app: it must unpack
+    itself independently, or it would break when the first copy exits.
+    """
+    env = dict(os.environ)
+    if is_frozen():
+        for var in ("LD_LIBRARY_PATH", "DYLD_LIBRARY_PATH"):      # restore the user's own values
+            orig = env.pop(var + "_ORIG", None)
+            if orig is not None:
+                env[var] = orig
+            elif var in env:
+                del env[var]
+        if same_app:
+            env["PYINSTALLER_RESET_ENVIRONMENT"] = "1"
+        else:
+            for var in ("TCL_LIBRARY", "TK_LIBRARY", "PYTHONHOME", "PYTHONPATH"):
+                env.pop(var, None)
+    env.update(extra or {})
+    return env

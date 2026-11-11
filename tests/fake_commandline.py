@@ -45,7 +45,6 @@ def main():
     start, end, step = int(a[i + 1]), int(a[i + 2]), int(a[i + 3])
     prefix = a[a.index("-oimage") + 1]
     assert Path(scene).exists(), scene
-    assert "-nogui" not in a, "Commandline does not take -nogui"
     print(f"Rendering {scene} {start}-{end}", flush=True)
     mode = os.environ.get("FAKE_MODE", "")
     if mode == "license":

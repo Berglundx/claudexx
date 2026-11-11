@@ -33,7 +33,7 @@ def create_job(store: J.JobStore, scene: Path, prefs: S.Settings, start: int, en
     job = J.Job(id=J.new_job_id(), scene=str(scene.resolve()),
                 output=output or project.default_output(scene),
                 start=start, end=max(start, end), step=max(1, step),
-                commandline=prefs.commandline, chunk_size=prefs.chunk_size,
+                mode=prefs.render_mode, chunk_size=prefs.chunk_size,
                 frame_timeout=prefs.frame_timeout, status=J.QUEUED)
     store.save(job)
     ensure_autostart()

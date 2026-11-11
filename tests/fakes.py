@@ -1,6 +1,5 @@
 """Install the fake Cinema 4D programs in a way each OS can execute."""
 import os
-import shutil
 import sys
 from pathlib import Path
 
@@ -8,15 +7,13 @@ HERE = Path(__file__).resolve().parent
 
 
 def install(src_name: str, dest: Path) -> Path:
-    """Copy tests/<src_name> to `dest` as a runnable program; return its path."""
+    """Create a runnable program at `dest` that runs tests/<src_name>; return its path."""
     src = HERE / src_name
     if sys.platform == "win32":
-        script = dest.with_suffix(".py")
-        shutil.copy(src, script)
         cmd = dest.with_suffix(".cmd")
-        cmd.write_text(f'@"{sys.executable}" "{script}" %*\r\n', encoding="utf-8")
+        cmd.write_text(f'@"{sys.executable}" "{src}" %*\r\n', encoding="utf-8")
         return cmd
-    shutil.copy(src, dest)
+    dest.write_text(f'#!/bin/sh\nexec "{sys.executable}" "{src}" "$@"\n', encoding="utf-8")
     dest.chmod(0o755)
     return dest
 
@@ -37,6 +34,7 @@ if __name__ == "__main__":
     (base / "C4D").mkdir(parents=True, exist_ok=True)
     (base / "proj").mkdir(exist_ok=True)
     exe = install("fake_commandline.py", base / "C4D" / "Commandline")
-    for name in ("cli", "gui"):
+    app = install("fake_c4d_app.py", base / "C4D" / "Cinema 4D")
+    for name in ("cli", "gui", "app"):
         (base / "proj" / f"{name}.c4d").write_text("fake")
-    print(f"COMMANDLINE={exe}")
+    print(f"COMMANDLINE={exe}\nAPP={app}")

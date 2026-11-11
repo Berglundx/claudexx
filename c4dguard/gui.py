@@ -8,6 +8,7 @@ this window never stops a render.
 from __future__ import annotations
 
 import os
+import queue
 import subprocess
 import sys
 import time
@@ -16,12 +17,14 @@ from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 
 from . import __version__, autostart, paths, project, quick
+from . import icon as iconlib
 from .quick import inbox, send_to_open_window
 from . import frames as framelib
 from . import jobs as J
 from . import settings as S
 from .cli import progress, setup_logging, spawn_background_runner
-from .runner import RunnerLock, is_runner_active
+from .runner import RunnerLock, is_runner_active, stop_file
+from .tray import Tray
 
 TITLE = "C4D Render Guard"
 
@@ -78,7 +81,7 @@ def status_text(job: J.Job, done: int, total: int, runner: bool) -> str:
     if job.status == J.RENDERING and runner:
         extra = f"  (recovered from {job.restarts} crash{'es' if job.restarts != 1 else ''})" \
             if job.restarts else ""
-        return "Rendering" + extra
+        return (job.phase or "Rendering") + extra
     return "Waiting" if runner else "Queued (starts automatically)"
 
 
@@ -160,7 +163,8 @@ class DetailsDialog(tk.Toplevel):
         except OSError:
             c4d = "(Cinema 4D has not printed anything yet)"
         text = (f"Project:  {job.scene}\nFrames:   {job.start}-{job.end} (step {job.step})\n"
-                f"Saved to: {Path(job.output).parent}\nStatus:   {job.status}\n"
+                f"Saved to: {Path(job.output).parent}\nStatus:   {job.status}  {job.phase}\n"
+                f"Method:   {dict(MODE_LABELS).get(job.mode, job.mode)}\n"
                 f"Problem:  {job.last_error or '-'}\n\n"
                 f"----- Cinema 4D output (last part of {log_path.name}) -----\n{c4d}")
         b = ttk.Frame(self, padding=10)
@@ -179,38 +183,53 @@ class DetailsDialog(tk.Toplevel):
         self.transient(master)
 
 
+MODE_LABELS = (
+    (paths.APP, "Open Cinema 4D and render in the Picture Viewer (recommended)"),
+    (paths.BACKGROUND, "Cinema 4D in the background, without a window"),
+    (paths.COMMANDLINE, "Cinema 4D's separate Commandline renderer (needs its own license)"),
+)
+
+
 class SettingsDialog(tk.Toplevel):
     def __init__(self, master):
         super().__init__(master)
         self.title(TITLE + " – Settings")
         self.resizable(False, False)
         s = S.load()
-        self.v_exe = tk.StringVar(value=s.commandline or (paths.find_commandline() or ""))
+        self.auto_dir = str(paths.find_install() or "")
+        self.v_dir = tk.StringVar(value=s.commandline or self.auto_dir)
+        self.v_mode = tk.StringVar(value=s.render_mode if s.render_mode in paths.MODES else paths.APP)
         self.v_chunk = tk.StringVar(value=str(s.chunk_size))
         self.v_timeout = tk.StringVar(value=str(s.frame_timeout))
         self.v_auto = tk.BooleanVar(value=s.auto_resume)
         f = ttk.Frame(self, padding=14)
         f.pack(fill="both")
-        ttk.Label(f, text="Cinema 4D Commandline").grid(row=0, column=0, sticky="w")
-        ttk.Entry(f, textvariable=self.v_exe, width=55).grid(row=0, column=1, padx=6)
+        ttk.Label(f, text="Cinema 4D folder").grid(row=0, column=0, sticky="w")
+        ttk.Entry(f, textvariable=self.v_dir, width=55).grid(row=0, column=1, padx=6)
         ttk.Button(f, text="Browse…", command=self._browse).grid(row=0, column=2)
-        ttk.Label(f, text="Frames per Cinema 4D launch").grid(row=1, column=0, sticky="w", pady=6)
-        ttk.Entry(f, textvariable=self.v_chunk, width=8).grid(row=1, column=1, sticky="w", padx=6)
-        ttk.Label(f, text="Hang timeout, seconds (0 = automatic)").grid(row=2, column=0, sticky="w")
-        ttk.Entry(f, textvariable=self.v_timeout, width=8).grid(row=2, column=1, sticky="w", padx=6)
+        ttk.Label(f, text="How to render").grid(row=1, column=0, sticky="nw", pady=(10, 0))
+        modes = ttk.Frame(f)
+        modes.grid(row=1, column=1, columnspan=2, sticky="w", padx=6, pady=(8, 4))
+        for value, label in MODE_LABELS:
+            ttk.Radiobutton(modes, text=label, value=value, variable=self.v_mode).pack(anchor="w")
+        ttk.Label(f, text="Frames per launch (background modes)").grid(row=2, column=0, sticky="w", pady=6)
+        ttk.Entry(f, textvariable=self.v_chunk, width=8).grid(row=2, column=1, sticky="w", padx=6)
+        ttk.Label(f, text="Hang timeout, seconds (0 = automatic)").grid(row=3, column=0, sticky="w")
+        ttk.Entry(f, textvariable=self.v_timeout, width=8).grid(row=3, column=1, sticky="w", padx=6)
         ttk.Checkbutton(f, text="Resume rendering automatically after the computer restarts",
-                        variable=self.v_auto).grid(row=3, column=0, columnspan=3, sticky="w", pady=8)
+                        variable=self.v_auto).grid(row=4, column=0, columnspan=3, sticky="w", pady=8)
         b = ttk.Frame(f)
-        b.grid(row=4, column=0, columnspan=3, sticky="e")
+        b.grid(row=5, column=0, columnspan=3, sticky="e")
         ttk.Button(b, text="Cancel", command=self.destroy).pack(side="right")
         ttk.Button(b, text="Save", command=self._save).pack(side="right", padx=6)
         self.transient(master)
         self.grab_set()
 
     def _browse(self):
-        p = filedialog.askopenfilename(parent=self, title="Locate Cinema 4D's Commandline")
+        p = filedialog.askdirectory(parent=self, title="Choose the Cinema 4D installation folder",
+                                    initialdir=self.v_dir.get() or None)
         if p:
-            self.v_exe.set(p)
+            self.v_dir.set(p)
 
     def _save(self):
         try:
@@ -218,9 +237,14 @@ class SettingsDialog(tk.Toplevel):
         except ValueError:
             messagebox.showerror(TITLE, "Please enter whole numbers.", parent=self)
             return
-        exe = self.v_exe.get().strip()
+        folder, mode = self.v_dir.get().strip(), self.v_mode.get()
+        if not paths.program_for(mode, folder or None):
+            messagebox.showerror(TITLE, "The program for that way of rendering was not found in "
+                                 f"this folder:\n{folder or '(none)'}", parent=self)
+            return
         s = S.load()
-        s.commandline = "" if exe == (paths.find_commandline() or "") else exe
+        s.commandline = "" if folder == self.auto_dir else folder
+        s.render_mode = mode
         s.chunk_size, s.frame_timeout = max(1, chunk), max(0, timeout)
         s.auto_resume = self.v_auto.get()
         S.save(s)
@@ -236,13 +260,25 @@ def make_app(dnd):
     base = dnd.TkinterDnD.Tk if dnd else tk.Tk
 
     class App(base):
-        def __init__(self, files: list[str]):
+        def __init__(self, files: list[str], hidden: bool = False):
             super().__init__()
             self.title(f"{TITLE} {__version__}")
             self.geometry("860x520")
             self.minsize(640, 400)
             self.store = J.JobStore()
             self._done_cache: dict[str, tuple[int, int]] = {}
+            self._last_spawn = 0.0
+            self._quitting = False
+            self._told_about_tray = False
+            self.tray = Tray()
+            self._set_window_icon()
+            self.protocol("WM_DELETE_WINDOW", self._on_close)
+            if self.tray.start():
+                self.after(300, self._poll_tray)
+                if hidden:
+                    self.withdraw()
+            elif hidden:
+                self.iconify()
             self._build()
             if sys.platform == "darwin":
                 # Files dropped on the app's Dock/Finder icon arrive as Apple Events.
@@ -301,6 +337,56 @@ def make_app(dnd):
             self.v_info = tk.StringVar()
             ttk.Label(self, textvariable=self.v_info, padding=(12, 0, 12, 10), foreground="#556").pack(anchor="w")
 
+        # ------------------------------------------------- tray / window life
+        def _set_window_icon(self):
+            try:
+                from PIL import ImageTk
+                image = iconlib.make_image(64)
+                if image is not None:
+                    self._icon_ref = ImageTk.PhotoImage(image)     # keep a reference
+                    self.iconphoto(True, self._icon_ref)
+            except Exception:  # noqa: BLE001 - cosmetic only
+                pass
+
+        def _on_close(self):
+            if not self.tray.active:
+                self.destroy()
+                return
+            self.withdraw()                     # keep running in the tray
+            if not self._told_about_tray:
+                self._told_about_tray = True
+                self.tray.notify("Still running here in the tray. Right-click the icon to quit.")
+
+        def _show(self):
+            self.deiconify()
+            self.lift()
+            self.focus_force()
+
+        def _quit(self):
+            """Tray → Quit: stop the background renderer (and its Cinema 4D), then exit."""
+            try:
+                stop_file().write_text("quit", encoding="utf-8")
+            except OSError:
+                pass
+            self._quitting = True
+            self.tray.stop()
+            self.destroy()
+
+        def _poll_tray(self):
+            try:
+                while True:
+                    event = self.tray.events.get_nowait()
+                    if event == "open":
+                        self._show()
+                    elif event == "logs":
+                        open_folder(paths.logs_dir())
+                    elif event == "quit":
+                        self._quit()
+                        return
+            except queue.Empty:
+                pass
+            self.after(300, self._poll_tray)
+
         def _hover(self, on: bool):
             self.drop.config(bg="#d6e8ff" if on else "#eef2f7")
 
@@ -316,20 +402,24 @@ def make_app(dnd):
                 filetypes=[("Cinema 4D projects", "*.c4d"), ("All files", "*")])
             self.submit_files(list(files))
 
-        def _commandline(self) -> str | None:
-            exe = S.commandline()
+        def _program(self) -> str | None:
+            """The Cinema 4D program to render with; asks for the folder if it isn't found."""
+            exe = S.program()
             if exe and Path(exe).exists():
                 return exe
             messagebox.showinfo(TITLE, "Cinema 4D wasn't found automatically.\n\n"
-                                "Please locate its “Commandline” program (it is in the "
-                                "Cinema 4D installation folder).")
-            p = filedialog.askopenfilename(title="Locate Cinema 4D's Commandline")
-            if not p:
+                                "Please choose the folder Cinema 4D is installed in.")
+            folder = filedialog.askdirectory(title="Choose the Cinema 4D installation folder")
+            if not folder:
                 return None
-            s = S.load()
-            s.commandline = p
-            S.save(s)
-            return p
+            prefs = S.load()
+            exe = paths.program_for(prefs.render_mode, folder)
+            if not exe:
+                messagebox.showerror(TITLE, f"Cinema 4D was not found in:\n{folder}")
+                return None
+            prefs.commandline = folder
+            S.save(prefs)
+            return exe
 
         def submit_files(self, files: list[str]):
             scenes = []
@@ -339,7 +429,7 @@ def make_app(dnd):
                     scenes.append(p)
                 elif f:
                     messagebox.showwarning(TITLE, f"“{p.name}” is not a Cinema 4D project (.c4d).")
-            if not scenes or not self._commandline():
+            if not scenes or not self._program():
                 return
             for scene in scenes:
                 self._submit(scene)
@@ -384,8 +474,12 @@ def make_app(dnd):
             self._start_runner()
 
         def _start_runner(self):
-            if not is_runner_active():
-                spawn_background_runner()
+            if self._quitting or is_runner_active():
+                return
+            if time.time() - self._last_spawn < 8:      # one is already on its way up
+                return
+            self._last_spawn = time.time()
+            spawn_background_runner()
 
         # ----------------------------------------------------------- actions
         def _selected_jobs(self) -> list[J.Job]:
@@ -468,9 +562,9 @@ def make_app(dnd):
                     f.unlink()
                 except OSError:
                     continue
-                self.submit_files([path])
-                self.deiconify()
-                self.lift()
+                self._show()
+                if path != SHOW:
+                    self.submit_files([path])
             runner = is_runner_active()
             selected = set(self.tree.selection())
             self.tree.delete(*self.tree.get_children())
@@ -481,6 +575,16 @@ def make_app(dnd):
                     Path(job.scene).name, status_text(job, done, total, runner), frames,
                     Path(job.output).parent))
             self.tree.selection_set([i for i in selected if self.tree.exists(i)])
+            jobs = self.store.all()
+            if not runner and any(j.status in J.RUNNABLE for j in jobs):
+                self._start_runner()                # keeps the renderer alive
+            active = [j for j in jobs if j.status == J.RENDERING]
+            if active and runner:
+                done, total = self._progress(active[0])
+                self.tray.set_tooltip(f"{TITLE}: {Path(active[0].scene).name} {done}/{total}")
+            else:
+                failed = sum(1 for j in jobs if j.status == J.FAILED)
+                self.tray.set_tooltip(f"{TITLE}: idle" + (f", {failed} failed" if failed else ""))
             resume = "on" if autostart.is_installed() else "off"
             self.v_info.set(("Rendering in the background. You can close this window."
                              if runner else "Idle.") +
@@ -491,17 +595,22 @@ def make_app(dnd):
     return App
 
 
-def main(files: list[str] | None = None) -> int:
+SHOW = "::show"     # inbox message: just bring the window to the front
+
+
+def main(files: list[str] | None = None, hidden: bool = False) -> int:
     files = files or []
     setup_logging()
     lock = RunnerLock(paths.app_home() / "gui.lock")
     if not lock.acquire():
-        # A window is already open: hand the files over to it.
+        # Already running (maybe hidden in the tray): hand over the files, or just show it.
         if files:
             send_to_open_window(files)
+        elif not hidden:
+            (inbox() / "show.txt").write_text(SHOW, encoding="utf-8")
         return 0
     try:
-        app = make_app(_load_dnd())(files)
+        app = make_app(_load_dnd())(files, hidden=hidden)
         app.mainloop()
     finally:
         lock.release()

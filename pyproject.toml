@@ -4,10 +4,10 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "c4dguard"
-version = "1.0.0"
+version = "1.2.0"
 description = "Render Cinema 4D projects and automatically recover from crashes, hangs and reboots"
 requires-python = ">=3.9"
-dependencies = ["tkinterdnd2"]
+dependencies = ["tkinterdnd2", "pystray; sys_platform == 'win32'", "Pillow"]
 
 [project.scripts]
 c4dguard = "c4dguard.cli:main"

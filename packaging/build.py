@@ -23,7 +23,8 @@ def pyinstaller(*args: str) -> None:
     cmd = [sys.executable, "-m", "PyInstaller", "--noconfirm", "--clean",
            "--distpath", str(DIST), "--workpath", str(ROOT / "build"),
            "--specpath", str(ROOT / "build"),
-           "--collect-all", "tkinterdnd2", *args, str(ROOT / "launcher.py")]
+           "--collect-all", "tkinterdnd2", "--hidden-import", "pystray._win32",
+           "--hidden-import", "PIL.ImageTk", *args, str(ROOT / "launcher.py")]
     print(" ".join(cmd), flush=True)
     subprocess.run(cmd, check=True, cwd=ROOT)
 
@@ -57,8 +58,12 @@ def main() -> None:
     shutil.rmtree(DIST, ignore_errors=True)
     print(f"Building C4D Render Guard {__version__}", flush=True)
     if sys.platform == "win32":
+        from c4dguard import icon
+        ico = ROOT / "build" / "icon.ico"
+        ico.parent.mkdir(parents=True, exist_ok=True)
+        extra = ["--icon", str(ico)] if icon.save_ico(ico) else []
         pyinstaller("--onefile", "--windowed", "--name", "C4DRenderGuard",
-                    "--version-file", str(windows_version_file()))
+                    "--version-file", str(windows_version_file()), *extra)
     elif sys.platform == "darwin":
         name = "C4D Render Guard"
         pyinstaller("--windowed", "--name", name,

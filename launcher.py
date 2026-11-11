@@ -7,7 +7,10 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
+from c4dguard import paths  # noqa: E402
 from c4dguard.cli import main  # noqa: E402
+
+paths.isolate_from_bundle()
 
 if __name__ == "__main__":
     sys.exit(main())

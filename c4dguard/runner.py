@@ -23,8 +23,10 @@ import time
 from pathlib import Path
 
 from . import frames as framelib
+from . import helper
 from . import jobs as J
 from . import paths
+from . import settings as S
 
 log = logging.getLogger("c4dguard")
 
@@ -76,13 +78,23 @@ def is_runner_active() -> bool:
 
 
 def build_command(job: J.Job, exe: str, chunk: list[int]) -> list[str]:
-    cmd = [exe, "-render", job.scene,
+    if job.mode == paths.APP:
+        # Start Cinema 4D normally (with its window); our helper plugin does the rest.
+        return [exe, f"g_additionalModulePath={helper.plugin_dir()}"] + list(job.extra_args)
+    # Headless, the way render farms such as Deadline run it. Works with both
+    # "Cinema 4D.exe" (uses the normal Cinema 4D license) and "Commandline.exe".
+    cmd = [exe, "-nogui", "-render", job.scene,
            "-frame", str(chunk[0]), str(chunk[-1]), str(job.step),
            "-oimage", job.output]
     if job.take:
         cmd += ["-take", job.take]
     cmd += list(job.extra_args)
     return cmd
+
+
+def stop_file() -> Path:
+    """Created by the window's Quit to make the background renderer stop."""
+    return paths.app_home() / "stop.request"
 
 
 def kill_tree(proc: subprocess.Popen) -> None:
@@ -111,6 +123,16 @@ class Runner:
         self.restart_delay = restart_delay
         self.poll = poll_seconds
         self.stop = stop_event or threading.Event()
+        # Visible Cinema 4D: how long to wait for ...
+        self.helper_timeout = 300.0   # ... the helper inside Cinema 4D to report in
+        self.done_grace = 20.0        # ... the last frames after Cinema 4D says it is done
+        self.settle = 15.0            # ... the last file to finish if Cinema 4D never says so
+
+    def _stopping(self) -> bool:
+        if not self.stop.is_set() and stop_file().exists():
+            log.info("Stop requested from the window")
+            self.stop.set()
+        return self.stop.is_set()
 
     # ------------------------------------------------------------------ helpers
     def _remaining(self, job: J.Job) -> list[int]:
@@ -125,7 +147,8 @@ class Runner:
     def _next_chunk(self, job: J.Job, remaining: list[int]) -> list[int]:
         chunk = [remaining[0]]
         for f in remaining[1:]:
-            if len(chunk) >= max(1, job.chunk_size) or f != chunk[-1] + job.step:
+            limit = len(job.frames()) if job.mode == paths.APP else max(1, job.chunk_size)
+            if len(chunk) >= limit or f != chunk[-1] + job.step:
                 break
             chunk.append(f)
         return chunk
@@ -192,8 +215,12 @@ class Runner:
             for job in self.store.all():
                 if job.active_chunk:
                     self._recover_interrupted(job)
+            try:
+                stop_file().unlink()            # a stale request from an earlier session
+            except OSError:
+                pass
             done_ids: set[str] = set()
-            while not self.stop.is_set():
+            while not self._stopping():
                 pending = [j for j in self.store.all()
                            if j.status in J.RUNNABLE and j.id not in done_ids
                            and (only is None or j.id in only)]
@@ -207,9 +234,14 @@ class Runner:
             lock.release()
 
     def run_job(self, job: J.Job) -> None:
-        exe = job.commandline or paths.find_commandline()
+        if job.mode not in paths.MODES:
+            job.mode = paths.APP
+        exe = job.commandline or S.program(job.mode)
         if not exe or not Path(exe).exists():
-            job.status, job.last_error = J.FAILED, f"Cinema 4D Commandline not found ({exe or 'auto-detect'})"
+            what = "Commandline renderer" if job.mode == paths.COMMANDLINE else "program"
+            job.status, job.last_error = J.FAILED, (
+                f"Cinema 4D's {what} was not found ({exe or 'looked in the usual install folders'}). "
+                "Set the Cinema 4D folder in Settings.")
             log.error("[%s] %s", job.id, job.last_error)
             self.store.save(job)
             return
@@ -222,7 +254,7 @@ class Runner:
         log.info("[%s] rendering %s frames %d-%d -> %s", job.id, Path(job.scene).name,
                  job.start, job.end, job.output)
 
-        while not self.stop.is_set():
+        while not self._stopping():
             user = self._user_status(job)
             if user:
                 log.info("[%s] %s by user", job.id, user)
@@ -230,7 +262,7 @@ class Runner:
             remaining = self._remaining(job)
             if not remaining:
                 job.status, job.finished, job.last_error = J.DONE, time.time(), ""
-                job.active_chunk = None
+                job.active_chunk, job.phase = None, ""
                 self.store.save(job)
                 log.info("[%s] finished, all %d frames rendered", job.id, len(job.frames()))
                 return
@@ -253,33 +285,48 @@ class Runner:
                 self.stop.wait(delay)
 
     def _render_chunk(self, job: J.Job, exe: str, chunk: list[int]) -> bool:
+        visible = job.mode == paths.APP
         cmd = build_command(job, exe, chunk)
         started = time.time()
         job.status = J.RENDERING
         job.active_chunk = {"frames": chunk, "started": started}
+        job.phase = helper.STAGE_TEXT[""]
         self.store.save(job)
-        log.info("[%s] launching Cinema 4D for frames %d-%d", job.id, chunk[0], chunk[-1])
+        log.info("[%s] starting Cinema 4D (%s) for frames %d-%d: %s", job.id, job.mode,
+                 chunk[0], chunk[-1], subprocess.list2cmdline(cmd))
+
+        extra_env: dict[str, str] = {}
+        status_path = None
+        if visible:
+            task, status_path = helper.write_task(job.id, job.scene, job.output,
+                                                  chunk[0], chunk[-1], job.step)
+            extra_env = {"C4DGUARD_TASK": str(task)}
 
         logfile = open(paths.logs_dir() / f"{job.id}.c4d.log", "ab")
         logfile.write(f"\n===== {time.ctime()} :: {subprocess.list2cmdline(cmd)}\n".encode())
         logfile.flush()
         log_path, log_offset = Path(logfile.name), logfile.tell()
         kwargs: dict = {"stdout": logfile, "stderr": subprocess.STDOUT,
-                        "stdin": subprocess.DEVNULL, "cwd": str(Path(job.scene).parent)}
+                        "stdin": subprocess.DEVNULL, "cwd": str(Path(job.scene).parent),
+                        "env": paths.child_env(extra_env)}
         if sys.platform == "win32":
-            # No console window: the guard may run without one (packaged app / logon).
-            kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP | paths.no_window_flags()
+            kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
+            if not visible:
+                # Headless: no console window popping up next to the guard.
+                kwargs["creationflags"] |= paths.no_window_flags()
         else:
             kwargs["start_new_session"] = True
         try:
             proc = subprocess.Popen(cmd, **kwargs)
         except OSError as exc:
             logfile.close()
-            return self._chunk_failed(job, chunk, f"could not start Cinema 4D: {exc}")
+            return self._chunk_failed(job, chunk, f"could not start Cinema 4D ({exe}): {exc}")
 
         seen = {f for f in framelib.scan(job.output) if f in chunk}
         last_progress = started
-        reason = ""
+        reason, fatal, stage, helper_note = "", "", "", ""
+        done_at = complete_at = None
+        code = None
         try:
             while True:
                 code = proc.poll()
@@ -296,8 +343,10 @@ class Runner:
                 if code is not None:
                     if code != 0:
                         reason = f"Cinema 4D exited with code {code}"
+                    elif visible:
+                        reason = "Cinema 4D was closed before the render finished"
                     break
-                if self.stop.is_set():
+                if self._stopping():
                     reason = "stopped"
                     kill_tree(proc)
                     break
@@ -308,6 +357,41 @@ class Runner:
                     if user == J.PAUSED:
                         job.status = J.PAUSED
                     break
+
+                if visible:
+                    reports = helper.read_status(status_path)
+                    stage = reports[-1]["stage"] if reports else ""
+                    helper_note = "; ".join(r["message"] for r in reports
+                                            if r["stage"] == "rendering" and r.get("message"))
+                    phase = helper.STAGE_TEXT.get(stage, stage)
+                    if phase != job.phase:
+                        job.phase = phase
+                        self.store.save(job)
+                        log.info("[%s] %s", job.id, phase)
+                    if stage == "error":
+                        fatal = ("Cinema 4D could not start the render: "
+                                 + last_lines(reports[-1].get("message", ""), 3))
+                        kill_tree(proc)
+                        break
+                    if not stage and now - started > self.helper_timeout:
+                        fatal = (f"Cinema 4D was started but did not respond within "
+                                 f"{self.helper_timeout:.0f}s. If it is showing a dialog (login, "
+                                 "license, missing files), close it and try again; otherwise "
+                                 "switch “How to render” in Settings to render in the background.")
+                        kill_tree(proc)
+                        break
+                    if stage == "done" and done_at is None:
+                        done_at = now
+                    complete = set(chunk) <= current
+                    complete_at = (complete_at or now) if complete else None
+                    if (done_at is not None and (complete or now - done_at > self.done_grace)) or \
+                            (complete and now - complete_at > self.settle):
+                        kill_tree(proc)              # the render is over: close Cinema 4D
+                        break
+                elif job.phase != "Rendering":
+                    job.phase = "Rendering"
+                    self.store.save(job)
+
                 timeout = self._timeout(job)
                 if now - last_progress > timeout:
                     reason = f"no new frame for {timeout:.0f}s, Cinema 4D appears hung"
@@ -321,7 +405,7 @@ class Runner:
         if reason in ("stopped", J.PAUSED, "removed"):
             # Keep active_chunk semantics: clean up a possibly partial frame now.
             self._discard_suspect_frame(job, job.active_chunk)
-            job.active_chunk = None
+            job.active_chunk, job.phase = None, ""
             if reason == "stopped":
                 job.status = J.QUEUED
             if reason != "removed":
@@ -336,9 +420,21 @@ class Runner:
             self.store.save(job)
             return True
         output = c4d_output(log_path, log_offset)
+        if visible and not reason and not fatal:
+            # Cinema 4D said the render ended, yet frames are missing.
+            fatal = (f"Cinema 4D finished rendering but frame {missing[0]} was not saved. "
+                     "Check the Picture Viewer / console in Cinema 4D for a render error "
+                     "(missing renderer or plugin, license of a third-party renderer)."
+                     + (f" Note: {helper_note}." if helper_note else ""))
         if not reason:
             reason = f"Cinema 4D exited before rendering frame {missing[0]}"
         self._discard_suspect_frame(job, job.active_chunk)
+        job.phase = ""
+        if fatal:
+            job.status, job.last_error, job.active_chunk = J.FAILED, fatal, None
+            self.store.save(job)
+            log.error("[%s] %s", job.id, fatal)
+            return True
 
         # Some failures will never fix themselves by restarting: stop right away
         # and say what Cinema 4D reported instead of retrying 5 times.
@@ -371,7 +467,7 @@ class Runner:
             return (f"Cinema 4D saved images, but not with the expected names "
                     f"(expected {Path(job.output).name}0000.ext, found {stray[0].name}). "
                     "Check the file name settings in Render Settings → Save." + said)
-        if code == 0:
+        if code == 0 and job.mode != paths.APP:
             return ("Cinema 4D finished without saving any images. In the project's Render "
                     "Settings, make sure Save → Regular Image is switched on (the renderer "
                     "only saves when it is), and that the project renders in Cinema 4D." + said)

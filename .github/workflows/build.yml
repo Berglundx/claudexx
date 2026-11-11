@@ -38,7 +38,7 @@ jobs:
         with:
           python-version: "3.12"
       - name: Install build tools
-        run: python -m pip install pyinstaller tkinterdnd2
+        run: python -m pip install pyinstaller tkinterdnd2 pystray Pillow
       - name: Build app
         run: python packaging/build.py
 
@@ -64,6 +64,19 @@ jobs:
           ls "$SMOKE/proj/renders/cli"
           test "$(ls "$SMOKE/proj/renders/cli" | wc -l)" -eq 6
 
+      # The default way of rendering: start the Cinema 4D app with the helper plugin.
+      - name: Smoke test - open Cinema 4D and render (with a crash)
+        shell: bash
+        env:
+          C4DGUARD_HOME: ${{ github.workspace }}/smoke/home
+          FAKE_STATE: ${{ github.workspace }}/smoke
+          FAKE_CRASH: "2"
+        run: |
+          export C4D_APP="$FAKE_APP"
+          "$APP_BIN" render "$SMOKE/proj/app.c4d" -s 0 -e 5 --mode app --restart-delay 1
+          ls "$SMOKE/proj/renders/app"
+          test "$(ls "$SMOKE/proj/renders/app" | wc -l)" -eq 6
+
       # Opening the app must pick up a queued job and render it in the background.
       - name: Smoke test - window starts queued renders
         shell: bash
@@ -71,7 +84,7 @@ jobs:
           C4DGUARD_HOME: ${{ github.workspace }}/smoke/home
           FAKE_STATE: ${{ github.workspace }}/smoke
         run: |
-          export C4D_COMMANDLINE="$FAKE_COMMANDLINE"
+          export C4D_COMMANDLINE="$FAKE_COMMANDLINE" C4D_APP="$FAKE_APP"
           "$APP_BIN" add "$SMOKE/proj/gui.c4d" -s 0 -e 4
           "$APP_BIN" gui &
           for i in $(seq 1 90); do
@@ -81,6 +94,11 @@ jobs:
           done
           ls "$SMOKE/proj/renders/gui"
           test "$(ls "$SMOKE/proj/renders/gui" | wc -l)" -eq 5
+
+      - name: Check the tray icon came up
+        if: runner.os == 'Windows'
+        shell: bash
+        run: grep "tray icon active" "$SMOKE/home/logs/guard.log"
 
       - name: Check version stamped in the exe
         if: runner.os == 'Windows'
@@ -119,12 +137,13 @@ jobs:
           $ver = python -c "import c4dguard; print(c4dguard.__version__)"
           & $iscc "/DAppVersion=$ver" packaging\installer.iss
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          if (-not (Test-Path "dist\C4DRenderGuard-Setup-$ver.exe")) { exit 1 }
 
       - uses: actions/upload-artifact@v4
         with:
           name: C4DRenderGuard-${{ runner.os }}
           path: |
-            dist/C4DRenderGuard-Setup.exe
+            dist/C4DRenderGuard-Setup-*.exe
             dist/C4DRenderGuard.exe
             dist/C4DRenderGuard-mac.zip
           if-no-files-found: error
@@ -140,6 +159,10 @@ jobs:
           merge-multiple: true
       - name: Read version
         run: echo "VERSION=$(python3 -c 'import c4dguard; print(c4dguard.__version__)')" >> "$GITHUB_ENV"
+      - name: Remove the previous build's files from the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release delete latest --yes || true
       - name: Move the "latest" tag to this build
         run: |
           git tag -f latest
@@ -151,7 +174,7 @@ jobs:
           prerelease: true
           files: artifacts/*
           body: |
-            **Windows:** download **C4DRenderGuard-Setup.exe** and run it (no admin rights needed).
+            **Windows:** download **C4DRenderGuard-Setup-${{ env.VERSION }}.exe** and run it (no admin rights needed).
             Then drag .c4d files onto the desktop icon, into the window, or right-click a .c4d file →
             "Render with C4D Render Guard", and enter the frames to render.
             `C4DRenderGuard.exe` is the same program without installer.

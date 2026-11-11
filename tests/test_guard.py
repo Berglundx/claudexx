@@ -33,7 +33,8 @@ class GuardTest(unittest.TestCase):
 
     def make_job(self, **kw) -> J.Job:
         params = dict(id=J.new_job_id(), scene=str(self.scene), output=str(self.tmp / "out" / "shot"),
-                      start=0, end=19, commandline=str(self.fake), chunk_size=6)
+                      start=0, end=19, commandline=str(self.fake), chunk_size=6,
+                      mode="commandline")
         params.update(kw)
         job = J.Job(**params)
         self.store.save(job)
@@ -117,7 +118,7 @@ class GuardTest(unittest.TestCase):
         fakes.kill_tree(proc.pid)
         proc.wait()
         if sys.platform != "win32":   # C4D runs in its own session there; kill it too
-            subprocess.run(["pkill", "-9", "-f", str(self.fake)], check=False)
+            subprocess.run(["pkill", "-9", "-f", "fake_commandline.py"], check=False)
         time.sleep(0.5)
         state = self.store.load(job.id)
         self.assertEqual(state.status, J.RENDERING)

@@ -11,7 +11,8 @@ from .jobs import _atomic_write
 
 @dataclass
 class Settings:
-    commandline: str = ""        # "" = auto-detect
+    commandline: str = ""        # Cinema 4D install folder or a program in it; "" = auto-detect
+    render_mode: str = "app"     # app | background | commandline (see paths.MODES)
     chunk_size: int = 10
     frame_timeout: int = 0       # 0 = automatic
     auto_resume: bool = True     # resume after reboot (installs the startup entry)
@@ -35,6 +36,7 @@ def save(s: Settings) -> None:
     _atomic_write(_path(), json.dumps(asdict(s), indent=2))
 
 
-def commandline(s: Settings | None = None) -> str | None:
+def program(mode: str | None = None, s: Settings | None = None) -> str | None:
+    """The Cinema 4D program used for `mode` (default: the configured mode)."""
     s = s or load()
-    return s.commandline or paths.find_commandline()
+    return paths.program_for(mode or s.render_mode, s.commandline or None)

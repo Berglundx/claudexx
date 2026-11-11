@@ -59,7 +59,7 @@ def progress(job: J.Job) -> tuple[int, int]:
 def spawn_background_runner() -> None:
     """Start `c4dguard run` as an independent process (survives closing the caller)."""
     cmd = paths.self_command(windowless=True) + ["run"]
-    kwargs: dict = {"stdin": subprocess.DEVNULL,
+    kwargs: dict = {"env": paths.child_env(same_app=True), "stdin": subprocess.DEVNULL,
                     "stdout": subprocess.DEVNULL, "stderr": subprocess.DEVNULL}
     if sys.platform == "win32":
         kwargs["creationflags"] = (subprocess.CREATE_NEW_PROCESS_GROUP
@@ -78,16 +78,18 @@ def cmd_add(args, store: J.JobStore) -> int:
         print(f"Scene not found: {scene}", file=sys.stderr)
         return 1
     exe = args.commandline or ""
-    if not exe and not S.commandline():
-        print("Warning: Cinema 4D Commandline not found; pass --commandline or set "
-              "C4D_COMMANDLINE before rendering.", file=sys.stderr)
+    # An explicit --commandline means "run exactly this, headless".
+    mode = args.mode or (paths.COMMANDLINE if exe else S.load().render_mode)
+    if not exe and not S.program(mode):
+        print("Warning: Cinema 4D was not found; set its folder in Settings, or the "
+              "C4D_APP / C4D_COMMANDLINE environment variables.", file=sys.stderr)
     if args.end < args.start or args.step < 1:
         print("Invalid frame range", file=sys.stderr)
         return 1
     job = J.Job(
         id=J.new_job_id(), scene=str(scene),
         output=resolve_output(scene, args.output) if args.output else project.default_output(scene),
-        start=args.start, end=args.end, step=args.step, commandline=exe,
+        start=args.start, end=args.end, step=args.step, commandline=exe, mode=mode,
         chunk_size=args.chunk, take=args.take or "",
         extra_args=shlex.split(args.extra or "", posix=sys.platform != "win32"),
         frame_timeout=args.timeout, max_attempts=args.max_attempts,
@@ -132,8 +134,18 @@ def keep_alive(args) -> int:
     log = logging.getLogger("c4dguard")
     cmd = paths.self_command(windowless=True) + ["run", "--restart-delay", str(args.restart_delay)]
     cmd += list(args.jobs or [])
+    if sys.platform == "win32":
+        # At logon: also bring up the tray icon (it shows progress and can reopen the window).
+        try:
+            subprocess.Popen(paths.self_command(windowless=True) + ["gui", "--hidden"],
+                             env=paths.child_env(same_app=True), stdin=subprocess.DEVNULL,
+                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                             creationflags=subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.DETACHED_PROCESS)
+        except OSError as exc:
+            log.warning("could not start the tray icon: %s", exc)
     while True:
-        rc = subprocess.call(cmd, stdin=subprocess.DEVNULL, creationflags=paths.no_window_flags())
+        rc = subprocess.call(cmd, stdin=subprocess.DEVNULL, env=paths.child_env(same_app=True),
+                             creationflags=paths.no_window_flags())
         if rc == 0:
             return 0
         log.error("Renderer stopped unexpectedly (exit code %s); restarting in 30s", rc)
@@ -218,7 +230,7 @@ def cmd_gui(args, store: J.JobStore) -> int:
         print("The GUI needs Tkinter (included with the python.org installers). "
               "Use the command line instead, see: python -m c4dguard --help", file=sys.stderr)
         return 1
-    return gui_main(getattr(args, "files", None))
+    return gui_main(getattr(args, "files", None), hidden=getattr(args, "hidden", False))
 
 
 def _job_options(p: argparse.ArgumentParser) -> None:
@@ -228,9 +240,13 @@ def _job_options(p: argparse.ArgumentParser) -> None:
     p.add_argument("--step", type=int, default=1, help="frame step (default 1)")
     p.add_argument("-o", "--output", help="output folder or path prefix "
                    "(default: <scene folder>/renders/<scene>/<scene>)")
-    p.add_argument("--commandline", help="path to Cinema 4D Commandline (default: auto-detect)")
+    p.add_argument("--mode", choices=paths.MODES,
+                   help="app: open Cinema 4D and render in the Picture Viewer; background: "
+                   "Cinema 4D without a window; commandline: the Commandline renderer "
+                   "(default: as chosen in Settings, initially app)")
+    p.add_argument("--commandline", help="run exactly this program headless (default: auto-detect)")
     p.add_argument("--chunk", type=int, default=10,
-                   help="frames rendered per Cinema 4D launch (default 10)")
+                   help="frames per Cinema 4D launch in the headless modes (default 10)")
     p.add_argument("--take", help="take to render")
     p.add_argument("--timeout", type=int, default=0,
                    help="seconds without a new frame before C4D is considered hung (0 = auto)")
@@ -288,6 +304,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     p = sub.add_parser("gui", help="open the window (optionally rendering the given .c4d files)")
     p.add_argument("files", nargs="*")
+    p.add_argument("--hidden", action="store_true", help="start in the tray, without showing the window")
     p.set_defaults(func=cmd_gui)
     return parser
 
@@ -304,6 +321,7 @@ def _attach_parent_console() -> None:
 
 
 def main(argv: list[str] | None = None) -> int:
+    paths.isolate_from_bundle()
     parser = build_parser()
     argv = list(sys.argv[1:] if argv is None else argv)
     # `c4dguard shot.c4d` (e.g. a file dropped on the app icon) opens the window with it.

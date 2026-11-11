@@ -1,7 +1,7 @@
 # C4D Render Guard
 
-Renders a Cinema 4D project with Cinema 4D's own **Commandline** renderer and
-keeps it going on its own:
+Opens Cinema 4D, loads your project and renders it to the Picture Viewer,
+just like you would by hand, and keeps the render going on its own:
 
 - **C4D crashes**: the guard notices, restarts Cinema 4D and continues from the
   first missing frame.
@@ -25,12 +25,15 @@ macOS and Linux.
 Download the latest build from this repository's **Releases** page (the
 release called *"latest"*).
 
-**Windows:** download and run **`C4DRenderGuard-Setup.exe`**. No admin rights
+**Windows:** download and run **`C4DRenderGuard-Setup-<version>.exe`**. No admin rights
 and no Python needed. Windows may warn that the app is from an unknown
 publisher because it isn't code-signed; click **More info → Run anyway**. You
 then get:
 
 - a Start menu entry and a desktop icon (drop `.c4d` files on it),
+- a **tray icon** next to the clock. Closing the window keeps the app there;
+  hover it for progress, double-click it to reopen the window, right-click →
+  *Quit* to stop rendering and exit,
 - **Render with C4D Render Guard** when you right-click a `.c4d` file,
 - a normal uninstaller under *Settings → Apps*.
 
@@ -63,24 +66,45 @@ the advanced options.
 > because Cinema 4D's license needs a user session. On a machine that should
 > recover without anyone there, turn on automatic login.
 
+## How it renders
+
+By default the app **starts Cinema 4D with its normal window**, opens the
+project, sets the frame range and save folder you chose, and runs *Render to
+Picture Viewer*. You can watch it work. When the frames are done it closes
+Cinema 4D again. This uses your normal Cinema 4D license and whatever renderer
+the project uses, exactly as when you render by hand.
+
+- The **image format** comes from the project's Render Settings. A movie
+  format (MP4, MOV) is switched to a PNG sequence for the render, because a
+  movie file can't be resumed after a crash. Your project file isn't changed.
+- Don't close that Cinema 4D window while it renders. If you do, the guard
+  opens it again and continues.
+- If Cinema 4D shows a dialog when it starts or opens the project (login,
+  missing fonts or textures), answer it and the render goes on.
+
+Under **Settings → How to render** there are two alternatives without a
+window, the way render farms like Deadline run Cinema 4D:
+
+- **Cinema 4D in the background** (`Cinema 4D.exe -nogui -render …`), which
+  uses the normal Cinema 4D license.
+- **Commandline renderer** (`Commandline.exe -nogui -render …`), which needs
+  its own Command Line license.
+
 ## If nothing renders
 
-When Cinema 4D runs but produces no frames, the job stops with **Failed**
-instead of retrying. **Double-click it** (or select it and click
-**Details…**) to see why, including everything Cinema 4D printed. Use **Copy
-to clipboard** to send it to someone. The usual causes:
+The job shows **Failed** instead of retrying forever. **Double-click it** (or
+select it and click **Details…**) to see why, including everything Cinema 4D
+printed. Use **Copy to clipboard** to send it to someone. The usual causes:
 
-- **No license for the command-line renderer.** Cinema 4D's `Commandline`
-  needs a license, just like the app. Log in with the Maxon App.
-- **Saving is switched off.** In the project's *Render Settings → Save*,
-  **Save** (Regular Image) must be ticked and a **Format** chosen. The
-  renderer saves nothing otherwise. The app sets the folder and file name;
-  the format comes from the project.
-- **Different file names.** Frames are expected as `name0000.ext`. If the
-  project's *Name* format differs, the error says what was found instead.
-- **The project doesn't render in Cinema 4D itself** (missing plugin,
-  textures or renderer). Open it in Cinema 4D and render one frame to the
-  Picture Viewer.
+- **Cinema 4D didn't respond after starting.** It is probably showing a
+  dialog; look at its window. If it never works, try *Cinema 4D in the
+  background* in Settings.
+- **Cinema 4D wasn't found.** Set the **Cinema 4D folder** in Settings.
+- **The render itself failed** (missing plugin, textures, or a third-party
+  renderer's license). The Picture Viewer and Cinema 4D's console show the
+  error. Open the project in Cinema 4D and render one frame by hand to check.
+- **Background modes only:** saving must be switched on in *Render Settings →
+  Save*, and the Commandline renderer needs its own license.
 
 ## Running from source (instead of the installer)
 
@@ -91,7 +115,7 @@ Install Python 3 from python.org, then:
 - **Mac:** double-click `Create Mac App.command` once to get a droplet app.
 - **Anywhere:** `python launcher.py` (window) or `python launcher.py <command>`.
 
-To build the installers yourself, run `pip install pyinstaller tkinterdnd2`,
+To build the installers yourself, run `pip install pyinstaller tkinterdnd2 pystray Pillow`,
 then `python packaging/build.py`. Then, on Windows, run
 `ISCC packaging\installer.iss` (Inno Setup 6). GitHub Actions
 (`.github/workflows/build.yml`) does all of this automatically on every push
@@ -121,8 +145,9 @@ Useful options for `add` / `render`:
 | option | meaning |
 |---|---|
 | `-o / --output` | Output folder, or a folder plus file name prefix. Default: `<project folder>/renders/<name>/<name>`. Frames are saved as `<name>0000.png` and so on, using the format set in the project's render settings. |
-| `--commandline` | Path to `Commandline.exe`. Auto-detected by default, or set the `C4D_COMMANDLINE` environment variable. |
-| `--chunk N` | Frames rendered per Cinema 4D launch (default 10). Smaller numbers lose less work in a crash but load the scene more often. |
+| `--mode` | `app` (default: open Cinema 4D and render in the Picture Viewer), `background` or `commandline`. |
+| `--commandline` | Run exactly this program headless. Cinema 4D is found automatically, or set `C4D_APP` / `C4D_COMMANDLINE`. |
+| `--chunk N` | Background modes only: frames rendered per Cinema 4D launch (default 10). Smaller numbers lose less work in a crash but load the scene more often. |
 | `--timeout S` | Seconds without a new frame before Cinema 4D counts as hung. The default `0` is automatic: 2 h until the first frame is timed, then 4× the slowest frame (at least 30 min). Set it yourself if your frames are very long. |
 | `--max-attempts N` | How many crashes in a row on the same frame before the job fails (default 5). |
 | `--take`, `--extra` | Take to render, and any extra Commandline arguments (for example `-threads 16`). |
@@ -136,8 +161,12 @@ Useful options for `add` / `render`:
   folder.
 - Progress comes from **the frames actually on disk**, so nothing is lost even
   if the guard itself is killed. Before each launch the guard scans the output
-  folder, deletes broken frames and renders the next chunk of missing ones with
-  `Commandline -render <scene> -frame a b step -oimage <output>`.
+  folder, deletes broken frames and renders the missing ones. In the default
+  mode it starts Cinema 4D with `g_additionalModulePath` pointing at a small
+  helper plugin (`c4dguard/helper.py`); the helper opens the project, applies
+  the frame range and save path, runs *Render to Picture Viewer* and reports
+  each step back. The background modes run
+  `-nogui -render <scene> -frame a b step -oimage <output>` in chunks.
 - While Cinema 4D runs, the job remembers which frames it is working on. If
   the guard starts and finds that record still there, the machine or the app
   died mid-render, so it cleans up the frame that may be partial before
@@ -158,7 +187,9 @@ Useful options for `add` / `render`:
 python -m unittest discover tests -v
 ```
 
-The tests use a fake `Commandline` (`tests/fake_commandline.py`) that crashes,
+The tests use a fake Cinema 4D app (`tests/fake_c4d_app.py`, which runs the
+real helper plugin against a stand-in `c4d` module) and a fake `Commandline`
+(`tests/fake_commandline.py`) that crashes,
 hangs or writes truncated frames on demand. One test kills the guard and
 Cinema 4D outright in the middle of a render, like a power cut, then checks
 that the render finishes without redoing finished frames.

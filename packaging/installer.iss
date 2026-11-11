@@ -18,7 +18,8 @@ DisableDirPage=yes
 ; Per-user install: no administrator rights needed.
 PrivilegesRequired=lowest
 OutputDir=..\dist
-OutputBaseFilename=C4DRenderGuard-Setup
+OutputBaseFilename=C4DRenderGuard-Setup-{#AppVersion}
+SetupIconFile=..\build\icon.ico
 UninstallDisplayIcon={app}\C4DRenderGuard.exe
 ChangesAssociations=yes
 CloseApplications=yes
