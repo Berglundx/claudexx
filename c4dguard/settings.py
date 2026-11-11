@@ -16,6 +16,7 @@ class Settings:
     chunk_size: int = 10
     frame_timeout: int = 0       # 0 = automatic
     auto_resume: bool = True     # resume after reboot (installs the startup entry)
+    close_popups: bool = True    # dismiss Cinema 4D pop-ups that block rendering
     last_range: list = field(default_factory=lambda: [0, 90, 1])   # prefill for the next drop
 
 

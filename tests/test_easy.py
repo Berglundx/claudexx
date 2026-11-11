@@ -106,6 +106,18 @@ class EasyTest(unittest.TestCase):
         self.assertNotIn("-nogui", log)
         self.assert_app_closed()
 
+    def test_popups_setting_off_opens_the_project_the_ordinary_way(self):
+        prefs = S.load()
+        prefs.close_popups = False
+        S.save(prefs)
+        os.environ["FAKE_EXPECT_DIALOGS"] = "1"      # the fake refuses File>Open otherwise
+        try:
+            job = self.app_job()
+            self.run_guard()
+            self.assertEqual(self.store.load(job.id).status, J.DONE)
+        finally:
+            del os.environ["FAKE_EXPECT_DIALOGS"]
+
     def test_app_mode_movie_format_becomes_image_sequence(self):
         os.environ["FAKE_MOVIE"] = "1"
         job = self.app_job()

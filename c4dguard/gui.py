@@ -81,6 +81,8 @@ def status_text(job: J.Job, done: int, total: int, runner: bool) -> str:
     if job.status == J.RENDERING and runner:
         extra = f"  (recovered from {job.restarts} crash{'es' if job.restarts != 1 else ''})" \
             if job.restarts else ""
+        if job.popups:
+            extra += f"  ({len(job.popups)} pop-up{'s' if len(job.popups) != 1 else ''} closed)"
         return (job.phase or "Rendering") + extra
     return "Waiting" if runner else "Queued (starts automatically)"
 
@@ -165,7 +167,10 @@ class DetailsDialog(tk.Toplevel):
         text = (f"Project:  {job.scene}\nFrames:   {job.start}-{job.end} (step {job.step})\n"
                 f"Saved to: {Path(job.output).parent}\nStatus:   {job.status}  {job.phase}\n"
                 f"Method:   {dict(MODE_LABELS).get(job.mode, job.mode)}\n"
-                f"Problem:  {job.last_error or '-'}\n\n"
+                f"Problem:  {job.last_error or '-'}\n"
+                + ("Pop-ups closed automatically:\n"
+                   + "".join(f"  - {p}\n" for p in job.popups) if job.popups else "")
+                + "\n"
                 f"----- Cinema 4D output (last part of {log_path.name}) -----\n{c4d}")
         b = ttk.Frame(self, padding=10)
         b.pack(side="bottom", fill="x")          # buttons first so they always stay visible
@@ -202,6 +207,7 @@ class SettingsDialog(tk.Toplevel):
         self.v_chunk = tk.StringVar(value=str(s.chunk_size))
         self.v_timeout = tk.StringVar(value=str(s.frame_timeout))
         self.v_auto = tk.BooleanVar(value=s.auto_resume)
+        self.v_popups = tk.BooleanVar(value=s.close_popups)
         f = ttk.Frame(self, padding=14)
         f.pack(fill="both")
         ttk.Label(f, text="Cinema 4D folder").grid(row=0, column=0, sticky="w")
@@ -217,9 +223,12 @@ class SettingsDialog(tk.Toplevel):
         ttk.Label(f, text="Hang timeout, seconds (0 = automatic)").grid(row=3, column=0, sticky="w")
         ttk.Entry(f, textvariable=self.v_timeout, width=8).grid(row=3, column=1, sticky="w", padx=6)
         ttk.Checkbutton(f, text="Resume rendering automatically after the computer restarts",
-                        variable=self.v_auto).grid(row=4, column=0, columnspan=3, sticky="w", pady=8)
+                        variable=self.v_auto).grid(row=4, column=0, columnspan=3, sticky="w", pady=(8, 0))
+        ttk.Checkbutton(f, text="Close Cinema 4D pop-ups that block rendering, and don't stop on "
+                        "missing textures", variable=self.v_popups).grid(
+            row=5, column=0, columnspan=3, sticky="w", pady=(2, 8))
         b = ttk.Frame(f)
-        b.grid(row=5, column=0, columnspan=3, sticky="e")
+        b.grid(row=6, column=0, columnspan=3, sticky="e")
         ttk.Button(b, text="Cancel", command=self.destroy).pack(side="right")
         ttk.Button(b, text="Save", command=self._save).pack(side="right", padx=6)
         self.transient(master)
@@ -247,6 +256,7 @@ class SettingsDialog(tk.Toplevel):
         s.render_mode = mode
         s.chunk_size, s.frame_timeout = max(1, chunk), max(0, timeout)
         s.auto_resume = self.v_auto.get()
+        s.close_popups = self.v_popups.get()
         S.save(s)
         try:
             autostart.install() if s.auto_resume else autostart.uninstall()

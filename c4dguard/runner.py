@@ -26,6 +26,7 @@ from . import frames as framelib
 from . import helper
 from . import jobs as J
 from . import paths
+from . import popups
 from . import settings as S
 
 log = logging.getLogger("c4dguard")
@@ -127,6 +128,7 @@ class Runner:
         self.helper_timeout = 300.0   # ... the helper inside Cinema 4D to report in
         self.done_grace = 20.0        # ... the last frames after Cinema 4D says it is done
         self.settle = 15.0            # ... the last file to finish if Cinema 4D never says so
+        self.popup_grace = 60.0       # ... the render to start before closing whatever is open
 
     def _stopping(self) -> bool:
         if not self.stop.is_set() and stop_file().exists():
@@ -286,6 +288,7 @@ class Runner:
 
     def _render_chunk(self, job: J.Job, exe: str, chunk: list[int]) -> bool:
         visible = job.mode == paths.APP
+        quiet = S.load().close_popups
         cmd = build_command(job, exe, chunk)
         started = time.time()
         job.status = J.RENDERING
@@ -299,7 +302,7 @@ class Runner:
         status_path = None
         if visible:
             task, status_path = helper.write_task(job.id, job.scene, job.output,
-                                                  chunk[0], chunk[-1], job.step)
+                                                  chunk[0], chunk[-1], job.step, quiet=quiet)
             extra_env = {"C4DGUARD_TASK": str(task)}
 
         logfile = open(paths.logs_dir() / f"{job.id}.c4d.log", "ab")
@@ -322,6 +325,7 @@ class Runner:
             logfile.close()
             return self._chunk_failed(job, chunk, f"could not start Cinema 4D ({exe}): {exc}")
 
+        watcher = popups.Watcher(proc.pid) if quiet else None
         seen = {f for f in framelib.scan(job.output) if f in chunk}
         last_progress = started
         reason, fatal, stage, helper_note = "", "", "", ""
@@ -357,6 +361,15 @@ class Runner:
                     if user == J.PAUSED:
                         job.status = J.PAUSED
                     break
+
+                if watcher:
+                    # Not rendering yet after a while? Then whatever is open is in the way.
+                    stuck = (visible and stage in ("", "started", "opened")
+                             and now - started > self.popup_grace)
+                    closed = watcher.check(stuck)
+                    if closed:
+                        job.popups = (job.popups + closed)[-20:]
+                        self.store.save(job)
 
                 if visible:
                     reports = helper.read_status(status_path)

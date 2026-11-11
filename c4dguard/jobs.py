@@ -37,6 +37,7 @@ class Job:
     commandline: str = ""          # explicit program to run; "" = auto-detect at render time
     mode: str = "app"              # app | background | commandline (paths.MODES)
     phase: str = ""                # what is happening right now, for the UI
+    popups: list[str] = field(default_factory=list)   # pop-ups that were closed automatically
     chunk_size: int = 10           # frames per Commandline launch
     take: str = ""
     extra_args: list[str] = field(default_factory=list)

@@ -55,9 +55,22 @@ def _open_project(task):
     doc = c4d.documents.GetActiveDocument()
     current = os.path.join(doc.GetDocumentPath() or "", doc.GetDocumentName() or "") if doc else ""
     if not (doc and _same_file(current, scene)):
-        if not c4d.documents.LoadFile(scene):
-            raise RuntimeError("Cinema 4D could not open " + scene)
-        doc = c4d.documents.GetActiveDocument()
+        doc = None
+        if task.get("quiet", True):
+            # Load without SCENEFILTER_DIALOGSALLOWED: Cinema 4D then shows no
+            # "missing fonts / plugins / newer version" pop-ups for this project.
+            flags = c4d.SCENEFILTER_OBJECTS | c4d.SCENEFILTER_MATERIALS
+            try:
+                doc = c4d.documents.LoadDocument(scene, flags, None)
+                if doc is not None:
+                    c4d.documents.InsertBaseDocument(doc)
+                    c4d.documents.SetActiveDocument(doc)
+            except Exception:
+                doc = None
+        if doc is None:                                   # the ordinary "File > Open"
+            if not c4d.documents.LoadFile(scene):
+                raise RuntimeError("Cinema 4D could not open " + scene)
+            doc = c4d.documents.GetActiveDocument()
     if doc is None:
         raise RuntimeError("no document is open after loading " + scene)
     return doc
@@ -82,6 +95,11 @@ def _apply_settings(task, doc):
     if rd[c4d.RDATA_FORMAT] in movies:
         rd[c4d.RDATA_FORMAT] = getattr(c4d, "FILTER_PNG", 1023671)
         notes.append("the project saves a movie file; using a PNG sequence instead")
+    if task.get("quiet", True) and hasattr(c4d, "RDATA_TEXTUREERROR"):
+        # "Texture Error" stops the render with a message when a texture is missing.
+        if rd[c4d.RDATA_TEXTUREERROR]:
+            rd[c4d.RDATA_TEXTUREERROR] = False
+            notes.append("missing textures will not stop the render")
     c4d.EventAdd()
     return notes
 
@@ -156,14 +174,16 @@ def plugin_dir() -> Path:
     return d
 
 
-def write_task(job_id: str, scene: str, output: str, start: int, end: int, step: int) -> tuple[Path, Path]:
+def write_task(job_id: str, scene: str, output: str, start: int, end: int, step: int,
+               quiet: bool = True) -> tuple[Path, Path]:
     """Create the task + (empty) status file for one Cinema 4D launch."""
     d = paths.app_home() / "tasks"
     d.mkdir(parents=True, exist_ok=True)
     task, status = d / f"{job_id}.task.json", d / f"{job_id}.status.jsonl"
     status.write_text("", encoding="utf-8")
     task.write_text(json.dumps({"scene": scene, "output": output, "start": start, "end": end,
-                                "step": step, "status": str(status)}), encoding="utf-8")
+                                "step": step, "quiet": quiet, "status": str(status)}),
+                    encoding="utf-8")
     return task, status
 
 

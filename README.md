@@ -79,8 +79,27 @@ the project uses, exactly as when you render by hand.
   movie file can't be resumed after a crash. Your project file isn't changed.
 - Don't close that Cinema 4D window while it renders. If you do, the guard
   opens it again and continues.
-- If Cinema 4D shows a dialog when it starts or opens the project (login,
-  missing fonts or textures), answer it and the render goes on.
+
+### Pop-ups
+
+Pop-ups that would stop an unattended render are handled automatically (you
+can switch this off in Settings):
+
+- The project is opened in a way that makes Cinema 4D **skip its own
+  warnings** (missing fonts, missing plugins, saved with a newer version).
+- The render is told **not to stop on missing textures**. Those objects then
+  render without the texture, so check the result if assets may be missing.
+- On Windows the guard also **watches the windows of the Cinema 4D it
+  started** and dismisses the ones in the way: system message boxes, any
+  dialog that freezes Cinema 4D's main window, and whatever is still open if
+  the render hasn't started a minute after launch. It clicks *Continue / Yes /
+  OK* where there are such buttons, otherwise presses Enter, and closes the
+  window if that didn't help. The Picture Viewer and normal panels are left
+  alone while a render is running.
+- Every pop-up that was closed is listed, with its text, under **Details…**.
+
+It can't answer a **login or license** window for you. If Cinema 4D needs you
+to sign in, do that once by hand. On Mac only the first two points apply.
 
 Under **Settings → How to render** there are two alternatives without a
 window, the way render farms like Deadline run Cinema 4D:

@@ -27,12 +27,14 @@ def make_c4d(mode: str):
     c4d = types.ModuleType("c4d")
     c4d.C4DPL_PROGRAM_STARTED = 450000215
     names = ["RDATA_FRAMESEQUENCE", "RDATA_FRAMEFROM", "RDATA_FRAMETO", "RDATA_FRAMESTEP",
-             "RDATA_GLOBALSAVE", "RDATA_SAVEIMAGE", "RDATA_PATH", "RDATA_NAMEFORMAT", "RDATA_FORMAT"]
+             "RDATA_GLOBALSAVE", "RDATA_SAVEIMAGE", "RDATA_PATH", "RDATA_NAMEFORMAT", "RDATA_FORMAT",
+             "RDATA_TEXTUREERROR"]
     for i, n in enumerate(names):
         setattr(c4d, n, 5000 + i)
     c4d.RDATA_FRAMESEQUENCE_MANUAL, c4d.RDATA_NAMEFORMAT_0 = 0, 0
     c4d.FILTER_MOVIE, c4d.FILTER_AVI, c4d.FILTER_PNG, c4d.FILTER_TIF = 1125, 1122, 1023671, 1100
     c4d.CHECKISRUNNING_EXTERNALRENDERING = 1
+    c4d.SCENEFILTER_OBJECTS, c4d.SCENEFILTER_MATERIALS, c4d.SCENEFILTER_DIALOGSALLOWED = 1, 2, 4
 
     class BaseTime:
         def __init__(self, frame, fps):
@@ -42,7 +44,8 @@ def make_c4d(mode: str):
         def __init__(self, path=""):
             self.path = path
             self.rd = {c4d.RDATA_FORMAT: c4d.FILTER_MOVIE if os.environ.get("FAKE_MOVIE") else c4d.FILTER_TIF,
-                       c4d.RDATA_SAVEIMAGE: False, c4d.RDATA_NAMEFORMAT: 3}
+                       c4d.RDATA_SAVEIMAGE: False, c4d.RDATA_NAMEFORMAT: 3,
+                       c4d.RDATA_TEXTUREERROR: True}
 
         def GetDocumentPath(self): return os.path.dirname(self.path)
         def GetDocumentName(self): return os.path.basename(self.path) or "Untitled 1"
@@ -52,16 +55,29 @@ def make_c4d(mode: str):
     state = {"doc": Doc(), "thread": None}
 
     def LoadFile(path):
+        # "File > Open": in the real app this is where pop-ups would appear.
         if mode == "noload" or not os.path.isfile(path):
             return False
+        assert os.environ.get("FAKE_EXPECT_DIALOGS"), "project must be loaded without dialogs"
         state["doc"] = Doc(path)
         return True
+
+    def LoadDocument(path, flags, thread):
+        assert not flags & c4d.SCENEFILTER_DIALOGSALLOWED
+        if mode == "noload" or not os.path.isfile(path):
+            return None
+        return Doc(path)
+
+    def SetActiveDocument(doc):
+        state["doc"] = doc
 
     def render():
         rd = state["doc"].rd
         assert rd[c4d.RDATA_SAVEIMAGE] and rd[c4d.RDATA_GLOBALSAVE], "saving must be switched on"
         assert rd[c4d.RDATA_NAMEFORMAT] == 0 and rd[c4d.RDATA_FRAMESEQUENCE] == 0
         assert rd[c4d.RDATA_FORMAT] != c4d.FILTER_MOVIE, "movie formats cannot be resumed"
+        if not os.environ.get("FAKE_EXPECT_DIALOGS"):
+            assert rd[c4d.RDATA_TEXTUREERROR] is False, "texture errors must not stop the render"
         secs = float(os.environ.get("FAKE_FRAME_SECONDS", "0.1"))
         always = os.environ.get("FAKE_ALWAYS_CRASH")
         for f in range(rd[c4d.RDATA_FRAMEFROM].frame, rd[c4d.RDATA_FRAMETO].frame + 1,
@@ -88,7 +104,9 @@ def make_c4d(mode: str):
         state["thread"].start()
 
     c4d.BaseTime = BaseTime
-    c4d.documents = types.SimpleNamespace(GetActiveDocument=lambda: state["doc"], LoadFile=LoadFile)
+    c4d.documents = types.SimpleNamespace(
+        GetActiveDocument=lambda: state["doc"], LoadFile=LoadFile, LoadDocument=LoadDocument,
+        InsertBaseDocument=lambda doc: None, SetActiveDocument=SetActiveDocument)
     c4d.CallCommand = CallCommand
     c4d.EventAdd = lambda *a: None
     c4d.GetC4DVersion = lambda: 2025100
